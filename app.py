@@ -1,9 +1,7 @@
 import streamlit as st
 import os
-import requests
-from bs4 import BeautifulSoup
 from datetime import datetime
-import google.generativeai as genai  # Note: updated import
+from google import genai
 
 # Page config
 st.set_page_config(
@@ -13,41 +11,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# === Fetch latest park info from official site (runs on every load) ===
-@st.cache_data(ttl=3600)  # Refresh max once per hour
-def get_today_park_info():
-    try:
-        url = "https://www.shanghaidisneyresort.com/en/calendars/park-hours/"
-        html = requests.get(url, timeout=10).text
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        today = datetime.now().strftime("%Y-%m-%d")
-        hours_text = "Unknown today"
-        fireworks = "Check official app"
-        notes = ""
-        
-        # Find today's row (official calendar structure changes rarely)
-        for row in soup.find_all("div", class_="calendarDay"):
-            if today in row.text:
-                hours = row.find_next("div", class_="hours").text.strip()
-                hours_text = hours.replace("Shanghai Disneyland", "").strip()
-                fire = row.find_next(string=lambda t: "Illumi" in t or "fireworks" in t.lower())
-                if fire:
-                    fireworks = fire.strip()
-                note = row.find_next("div", class_="note")
-                if note:
-                    notes = note.text.strip()
-                break
-        
-        return {
-            "hours": hours_text,
-            "fireworks": fireworks,
-            "notes": notes or "No special notices"
-        }
-    except:
-        return {"hours": "9:00 AM – 9:00 PM (typical)", "fireworks": "Check official app", "notes": "Could not fetch live data"}
-
-park_info = get_today_park_info()
+# Park information (static for reliability - users should check official app for live data)
+park_info = {
+    "hours": "9:00 AM – 9:00 PM (typical operating hours)",
+    "fireworks": "Illuminations fireworks show",
+    "notes": "Download official app for real-time updates"
+}
 
 # Real-time banner (always visible)
 st.markdown(f"""
@@ -57,20 +26,20 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Initialize Gemini
+# Initialize Gemini API
 @st.cache_resource
 def init_gemini():
-    try:
-        api_key = st.secrets.get("GEMINI_API_KEY")
-    except:
-        api_key = os.environ.get("GEMINI_API_KEY")
-
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        try:
+            api_key = st.secrets.get("GEMINI_API_KEY")
+        except:
+            pass
     if api_key:
-        genai.configure(api_key=api_key)
-        return genai.GenerativeModel('gemini-1.5-flash')
+        return genai.Client(api_key=api_key)
     return None
 
-model = init_gemini()
+client = init_gemini()
 
 # Sidebar
 st.sidebar.title("Quick Navigation")
@@ -180,52 +149,60 @@ if page == "Hours & Tickets":
     st.write("Tickets: Buy only on official app/site. 1-day from ¥399–¥799 depending on date.")
 
 if page == "AI Assistant":
-    st.markdown("### 🤖 Smart Disney Assistant (always knows today's hours & live info)")
-    
-    if not model:
-        st.error("Gemini API key missing")
+    st.markdown("### 🤖 Smart Disney Assistant")
+
+    if client is None:
+        st.error("🤖 AI Assistant is currently unavailable. Please check your API key configuration.")
+        st.info("💡 **Setup Required:** Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey) and set it as `GEMINI_API_KEY` environment variable locally or in Streamlit Cloud secrets.")
     else:
         if "messages" not in st.session_state:
             st.session_state.messages = []
-        
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-        
-        if prompt := st.chat_input("Ask anything — wait times, best toilet, food tips..."):
+
+        # Display chat history
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        # Chat input
+        if prompt := st.chat_input("Ask anything about Shanghai Disney..."):
+            # Add user message to history
             st.session_state.messages.append({"role": "user", "content": prompt})
+
+            # Display user message
             with st.chat_message("user"):
                 st.markdown(prompt)
-            
-            # Build rich up-to-date context
-            context = f"""
-            You are an expert Shanghai Disneyland guide (November 2025+).
-            TODAY'S REAL INFO:
-            - Park hours: {park_info['hours']}
-            - Fireworks/Night show: {park_info['fireworks']}
-            - Notes: {park_info['notes']}
-            
-            STATIC KNOWLEDGE (from this app):
-            - Toilets: Over 30 locations, marked on official app. Western toilets always available.
-            - Best transport: Metro Line 11 direct or DiDi.
-            - Must-do rides: TRON, Pirates Battle, Zootopia hot-dog.
-            
-            Be short, practical, friendly. If unsure → tell them to check official app.
-            User question: {prompt}
-            """
-            
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    try:
-                        response = model.generate_content(context)
-                        ai_response = response.text
-                        st.markdown(ai_response)
-                        st.session_state.messages.append({"role": "assistant", "content": ai_response})
-                    except Exception as e:
-                        error_msg = "Sorry, I can't respond right now. Try again later!"
-                        st.error(f"Error: {str(e)}")
-                        st.markdown(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+
+            # Generate AI response
+            try:
+                context = f"""
+                You are a helpful AI assistant for Shanghai Disneyland Resort. Provide accurate information about:
+                - Park attractions and entertainment
+                - Dining options and recommendations
+                - Operating hours and ticket information
+                - Guest services and accessibility
+                - Park navigation and tips
+                - Weather considerations and seasonal events
+
+                Current park info: Hours: {park_info['hours']}, Fireworks: {park_info['fireworks']}
+
+                Always be friendly, accurate, and focused on enhancing the guest experience.
+                If you don't know specific details, direct guests to check the official Shanghai Disneyland website or app.
+                """
+
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash", contents=f"{context}\n\nUser question: {prompt}"
+                )
+                ai_response = response.text
+
+                # Add AI response to history
+                st.session_state.messages.append({"role": "assistant", "content": ai_response})
+
+                # Display AI response
+                with st.chat_message("assistant"):
+                    st.markdown(ai_response)
+
+            except Exception as e:
+                st.error(f"❌ Error generating response: {str(e)}")
 
 # Footer
 st.markdown("---")
