@@ -29,12 +29,17 @@ st.markdown(f"""
 # Initialize Gemini API
 @st.cache_resource
 def init_gemini():
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        try:
-            api_key = st.secrets.get("GEMINI_API_KEY")
-        except:
-            pass
+    # Debug: Check API key sources
+    env_key = os.environ.get("GEMINI_API_KEY")
+    secrets_key = None
+    try:
+        secrets_key = st.secrets.get("GEMINI_API_KEY")
+    except Exception as e:
+        secrets_error = str(e)
+
+    # Use environment variable first (local), then secrets (cloud)
+    api_key = env_key or secrets_key
+
     if api_key:
         return genai.Client(api_key=api_key)
     return None
@@ -153,7 +158,25 @@ if page == "AI Assistant":
 
     if client is None:
         st.error("🤖 AI Assistant is currently unavailable. Please check your API key configuration.")
-        st.info("💡 **Setup Required:** Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey) and set it as `GEMINI_API_KEY` environment variable locally or in Streamlit Cloud secrets.")
+
+        # Debug information
+        with st.expander("🔍 Debug Information"):
+            env_key = os.environ.get("GEMINI_API_KEY")
+            secrets_available = False
+            secrets_error = "No error"
+            try:
+                test_secret = st.secrets.get("GEMINI_API_KEY")
+                secrets_available = test_secret is not None
+            except Exception as e:
+                secrets_error = str(e)
+
+            st.write("**Environment Variable (GEMINI_API_KEY):**", "✅ Set" if env_key else "❌ Not set")
+            st.write("**Streamlit Secrets (GEMINI_API_KEY):**", "✅ Available" if secrets_available else f"❌ Error: {secrets_error}")
+
+            if not env_key and not secrets_available:
+                st.write("**Solution:** Set `GEMINI_API_KEY` in Streamlit Cloud secrets or as environment variable")
+
+        st.info("💡 **Setup Required:** Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey) and set it as `GEMINI_API_KEY` in Streamlit Cloud secrets.")
     else:
         if "messages" not in st.session_state:
             st.session_state.messages = []
