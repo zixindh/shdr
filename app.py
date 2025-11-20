@@ -93,8 +93,8 @@ if page == "🏠 Overview":
         """, unsafe_allow_html=True)
 
     with col2:
-        st.image("https://via.placeholder.com/300x200?text=Shanghai+Disney+Image",
-                caption="Shanghai Disneyland", width='stretch')
+        st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/4/4f/Shanghai_Disneyland_Park_-_panoramio.jpg/320px-Shanghai_Disneyland_Park_-_panoramio.jpg",
+                caption="Shanghai Disneyland Resort", width='stretch')
 
 elif page == "🎢 Attractions":
     st.markdown('<div class="section-header">Attractions & Entertainment</div>', unsafe_allow_html=True)
