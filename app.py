@@ -1,297 +1,232 @@
 import streamlit as st
 import os
-from google import genai
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
+import google.generativeai as genai  # Note: updated import
 
-# Page configuration
+# Page config
 st.set_page_config(
-    page_title="Shanghai Disney Guide",
-    page_icon="🎢",
+    page_title="Shanghai Disney Quick Guide",
+    page_icon="🏰",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize Gemini API
-@st.cache_resource
-def init_gemini():
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        try:
-            api_key = st.secrets.get("GEMINI_API_KEY")
-        except:
-            pass
-    if api_key:
-        return genai.Client(api_key=api_key)
-    return None
+# === Fetch latest park info from official site (runs on every load) ===
+@st.cache_data(ttl=3600)  # Refresh max once per hour
+def get_today_park_info():
+    try:
+        url = "https://www.shanghaidisneyresort.com/en/calendars/park-hours/"
+        html = requests.get(url, timeout=10).text
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        hours_text = "Unknown today"
+        fireworks = "Check official app"
+        notes = ""
+        
+        # Find today's row (official calendar structure changes rarely)
+        for row in soup.find_all("div", class_="calendarDay"):
+            if today in row.text:
+                hours = row.find_next("div", class_="hours").text.strip()
+                hours_text = hours.replace("Shanghai Disneyland", "").strip()
+                fire = row.find_next(string=lambda t: "Illumi" in t or "fireworks" in t.lower())
+                if fire:
+                    fireworks = fire.strip()
+                note = row.find_next("div", class_="note")
+                if note:
+                    notes = note.text.strip()
+                break
+        
+        return {
+            "hours": hours_text,
+            "fireworks": fireworks,
+            "notes": notes or "No special notices"
+        }
+    except:
+        return {"hours": "9:00 AM – 9:00 PM (typical)", "fireworks": "Check official app", "notes": "Could not fetch live data"}
 
-client = init_gemini()
+park_info = get_today_park_info()
 
-# Custom CSS for minimalistic design
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #FF6B35;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .section-header {
-        font-size: 1.5rem;
-        font-weight: bold;
-        color: #2E3440;
-        margin-top: 2rem;
-        margin-bottom: 1rem;
-    }
-    .info-card {
-        background-color: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #FF6B35;
-        margin-bottom: 1rem;
-    }
-    .chat-container {
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
-        padding: 1rem;
-        background-color: #fafafa;
-    }
-</style>
+# Real-time banner (always visible)
+st.markdown(f"""
+<div style="background:#FF6B35;color:white;padding:1rem;text-align:center;font-size:1.3rem;font-weight:bold;">
+🏰 Today ({datetime.now().strftime('%b %d, %Y')}): {park_info['hours']} | Fireworks: {park_info['fireworks']}
+<br><small>{park_info['notes']}</small>
+</div>
 """, unsafe_allow_html=True)
 
-# Sidebar navigation
-st.sidebar.title("🗺️ Navigation")
-page = st.sidebar.radio(
-    "Choose section:",
-    ["🏠 Overview", "🎢 Attractions", "🍽️ Dining", "🕐 Hours & Tickets", "💬 AI Assistant"],
-    label_visibility="collapsed"
-)
+# Initialize Gemini
+@st.cache_resource
+def init_gemini():
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY")
+    except:
+        api_key = os.environ.get("GEMINI_API_KEY")
 
-# Main header
-st.markdown('<div class="main-header">🎢 Shanghai Disney Resort Guide</div>', unsafe_allow_html=True)
+    if api_key:
+        genai.configure(api_key=api_key)
+        return genai.GenerativeModel('gemini-1.5-flash')
+    return None
 
-# Main content based on selection
-if page == "🏠 Overview":
-    st.markdown('<div class="section-header">Welcome to Shanghai Disney Resort</div>', unsafe_allow_html=True)
+model = init_gemini()
 
-    col1, col2 = st.columns([2, 1])
+# Sidebar
+st.sidebar.title("Quick Navigation")
+page = st.sidebar.radio("Go to:", [
+    "Overview", "Getting to the Park", "Attractions", "Dining", 
+    "Toilets & Baby Care", "Hours & Tickets", "AI Assistant"
+], label_visibility="collapsed")
 
+st.markdown("### Shanghai Disney Quick Guide")
+st.caption("Fast, no-nonsense info for busy guests · Data updated live where possible")
+
+# ====================== PAGES ======================
+
+if page == "Overview":
+    st.write("Unique castle, TRON, Pirates battle ride. 8 lands now with Zootopia (opened 2023). Download the official Shanghai Disney Resort app for real-time wait times & map.")
+
+if page == "Getting to the Park":
+    st.markdown("### 🚇 Best Ways to Shanghai Disneyland (2025)")
+    
+    col1, col2 = st.columns(2)
     with col1:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🌟 About Shanghai Disneyland</h4>
-        <p>Shanghai Disneyland Resort is Disney's first theme park on the Chinese mainland,
-        featuring unique attractions inspired by Chinese culture alongside beloved Disney classics.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("""
-        <div class="info-card">
-        <h4>📍 Location & Getting There</h4>
-        <p>Located in Pudong New Area, Shanghai. Easily accessible by metro, taxi, or Disney Resort shuttle.</p>
-        <p><strong>Address:</strong> 310 Huangjin Road, Pudong New Area, Shanghai</p>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown("#### Metro Line 11 (Cheapest & Most Reliable)")
+        st.write("""
+        - Direct to **Disney Resort Station** (terminal stop)
+        - From People's Square / Nanjing Rd: ~50–70 min, ¥7
+        - First train ~6:00 AM, last ~22:30
+        - Exit 1 or 2 → 5–10 min walk to park gates
+        - Pro tip: Buy a Shanghai Public Transportation Card or use WeChat/Alipay
+        """)
+    
     with col2:
-        # Display a beautiful welcome message instead of an image
-        st.markdown("""
-        <div style="
-            background: linear-gradient(135deg, #FF6B35, #F7931E);
-            padding: 2rem;
-            border-radius: 15px;
-            color: white;
-            text-align: center;
-            font-size: 1.2rem;
-            font-weight: bold;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        ">
-            🎢 Welcome to Shanghai Disneyland Resort! ✨<br>
-            <span style="font-size: 0.9rem; font-weight: normal;">Your magical adventure awaits!</span>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("#### DiDi / Taxi (Fastest with luggage/kids)")
+        st.write("""
+        - DiDi English version works great
+        - From downtown: 40–70 min, ¥80–150
+        - From PVG airport: ~30–45 min, ¥150–200
+        - Drop-off: Search “上海迪士尼乐园” or “Disney Car & Coach Parking Lot”
+        - Early entry hotel guests: Ask for “Mickey Parking Lot” (closer)
+        """)
+    
+    st.info("Avoid random taxis outside the resort at closing — use DiDi to avoid scams.")
 
-elif page == "🎢 Attractions":
-    st.markdown('<div class="section-header">Attractions & Entertainment</div>', unsafe_allow_html=True)
-
-    # Land tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Mickey Avenue", "Gardens of Imagination", "Fantasyland", "Tomorrowland", "Treasure Cove"])
+if page == "Attractions":
+    st.markdown("### 🎢 Must-Know Rides & Shows")
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Mickey Ave", "Gardens", "Fantasyland", "Tomorrowland", "Treasure Cove", "Zootopia"])
 
     with tab1:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🎠 Mickey Avenue</h4>
-        <p>The vibrant main street welcoming guests to the park with parades, character meet-and-greets, and Disney storytelling.</p>
-        <p><strong>Key Attractions:</strong> Disney Storybook Parades, Character Greetings, Fireworks Shows</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.write("**Parades & Character Greetings** - Main street with Disney parades and meet-and-greets.")
 
     with tab2:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🌸 Gardens of Imagination</h4>
-        <p>A whimsical land featuring the world's first Disney Princess-themed dark ride and interactive experiences.</p>
-        <p><strong>Key Attractions:</strong> Voyage to the Crystal Grotto, Dumbo the Flying Elephant</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.write("**Voyage to the Crystal Grotto** (Disney Princess dark ride) - Best for kids. Dumbo ride nearby.")
 
     with tab3:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🏰 Fantasyland</h4>
-        <p>Classic Disney magic with fairy tale castles, gentle rides, and character encounters.</p>
-        <p><strong>Key Attractions:</strong> Enchanted Storybook Castle, Peter Pan's Flight, Seven Dwarfs Mine Train</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.write("**Seven Dwarfs Mine Train** - Gentle coaster. Peter Pan's Flight. Enchanted Storybook Castle.")
 
     with tab4:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🚀 Tomorrowland</h4>
-        <p>Cutting-edge technology meets Disney imagination with thrilling space-themed adventures.</p>
-        <p><strong>Key Attractions:</strong> TRON Lightcycle Power Run, Space Mountain, Buzz Lightyear Planet Rescue</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.write("**TRON Lightcycle Power Run** - Must-do! Space Mountain. Buzz Lightyear.")
 
     with tab5:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🏴‍☠️ Treasure Cove</h4>
-        <p>An adventurous pirate-themed land inspired by Disney's Pirates of the Caribbean.</p>
-        <p><strong>Key Attractions:</strong> Pirates of the Caribbean: Battle for the Sunken Treasure, Explorer Canoes</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.write("**Pirates of the Caribbean: Battle for the Sunken Treasure** - Boat ride with drops.")
 
-elif page == "🍽️ Dining":
-    st.markdown('<div class="section-header">Dining Options</div>', unsafe_allow_html=True)
+    with tab6:
+        st.write("**Zootopia** - New land (2023). Hot dog eating contest show. Gentle rides for families.")
 
+if page == "Dining":
+    st.markdown("### 🍽️ Food Options")
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🍔 Quick Service</h4>
-        <p>Fast and convenient dining options throughout the park.</p>
-        <ul>
-        <li>Donald's Diner (American)</li>
-        <li>Royal Banquet Hall (Chinese)</li>
-        <li>Wandering Moon Teahouse (Asian)</li>
-        </ul>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("#### Quick Service")
+        st.write("- **Donald's Diner** (American burgers/hot dogs)")
+        st.write("- **Royal Banquet Hall** (Chinese dishes)")
+        st.write("- **Wandering Moon Teahouse** (Asian fusion)")
 
     with col2:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🍽️ Table Service</h4>
-        <p>Sit-down dining experiences with reservations recommended.</p>
-        <ul>
-        <li>Crystal Palace Restaurant</li>
-        <li>Walt's Restaurant</li>
-        <li>Enchanted Tale Restaurant</li>
-        </ul>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("#### Table Service (Reservations Recommended)")
+        st.write("- **Crystal Palace Restaurant**")
+        st.write("- **Walt's Restaurant**")
+        st.write("- **Enchanted Tale Restaurant** (character dining)")
 
-    st.markdown("""
-    <div class="info-card">
-    <h4>🥤 Specialty Experiences</h4>
-    <p>Unique dining experiences including character dining and themed restaurants.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.info("Best bet: Quick service for speed. Make reservations for table service via official app.")
 
-elif page == "🕐 Hours & Tickets":
-    st.markdown('<div class="section-header">Operating Hours & Tickets</div>', unsafe_allow_html=True)
+if page == "Toilets & Baby Care":
+    st.markdown("### 🚽 Toilet Locations (Every guest asks this!)")
+    st.write("""
+    There are **over 30 toilet facilities** inside the park — marked on the official app map (filter → Restrooms).
+    
+    Quick list of the most useful ones (always clean, air-conditioned):
+    - Entrance / Mickey Avenue — right after security
+    - Near TRON (Tomorrowland) — biggest & least crowded
+    - Behind Enchanted Storybook Castle (Fantasyland)
+    - Treasure Cove — next to Pirates
+    - Zootopia — near the hot-dog stand
+    - Adventure Isle — near Roaring Rapids
+    - Gardens of Imagination — near Dumbo
+    
+    **Western sitting toilets** are always available (usually 20–30% of stalls, marked with ♿ or at the back).
+    
+    Baby Care Centers (diaper changing, nursing, microwave):
+    - Mickey Avenue (main one)
+    - Fantasyland (near Alice Wonderland Maze)
+    """)
+    st.info("Use the official Shanghai Disney Resort app → Map → filter 'Restrooms' for GPS directions.")
 
-    col1, col2 = st.columns(2)
+if page == "Hours & Tickets":
+    st.write(f"**Live today:** {park_info['hours']}")
+    st.write("Tickets: Buy only on official app/site. 1-day from ¥399–¥799 depending on date.")
 
-    with col1:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🕐 Operating Hours</h4>
-        <p>Park hours typically vary by season. Check official website for current schedule.</p>
-        <p><strong>General Hours:</strong><br>
-        Opening: 9:00 AM<br>
-        Closing: 9:00 PM (weekdays)<br>
-        Extended hours on weekends and holidays</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col2:
-        st.markdown("""
-        <div class="info-card">
-        <h4>🎫 Ticket Information</h4>
-        <p>Multiple ticket options available for 1-day or multi-day visits.</p>
-        <ul>
-        <li>1-Day Tickets</li>
-        <li>2-Day Tickets</li>
-        <li>Annual Passes</li>
-        <li>Park Hopper Options</li>
-        </ul>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.info("⚠️ Hours and ticket prices subject to change. Please check the official Shanghai Disneyland website for the most current information.")
-
-elif page == "💬 AI Assistant":
-    st.markdown('<div class="section-header">AI Guest Assistant</div>', unsafe_allow_html=True)
-
-    if client is None:
-        st.error("🤖 AI Assistant is currently unavailable.")
-        st.info("💡 **Setup Required:** Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey) and set it as `GEMINI_API_KEY` environment variable locally or in Streamlit Cloud secrets.")
+if page == "AI Assistant":
+    st.markdown("### 🤖 Smart Disney Assistant (always knows today's hours & live info)")
+    
+    if not model:
+        st.error("Gemini API key missing")
     else:
-        st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-
-        # Initialize chat history
         if "messages" not in st.session_state:
             st.session_state.messages = []
-
-        # Display chat history
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        # Chat input
-        if prompt := st.chat_input("Ask me anything about Shanghai Disney..."):
-            # Add user message to history
+        
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+        
+        if prompt := st.chat_input("Ask anything — wait times, best toilet, food tips..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
-
-            # Display user message
             with st.chat_message("user"):
                 st.markdown(prompt)
-
-            # Generate AI response
-            try:
-                context = """
-                You are a helpful AI assistant for Shanghai Disneyland Resort. Provide accurate information about:
-                - Park attractions and entertainment
-                - Dining options and recommendations
-                - Operating hours and ticket information
-                - Guest services and accessibility
-                - Park navigation and tips
-                - Weather considerations and seasonal events
-
-                Always be friendly, accurate, and focused on enhancing the guest experience.
-                If you don't know specific details, direct guests to check the official Shanghai Disneyland website.
-                """
-
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash", contents=f"{context}\n\nUser question: {prompt}"
-                )
-                ai_response = response.text
-
-                # Add AI response to history
-                st.session_state.messages.append({"role": "assistant", "content": ai_response})
-
-                # Display AI response
-                with st.chat_message("assistant"):
-                    st.markdown(ai_response)
-
-            except Exception as e:
-                st.error(f"❌ Error generating response: {str(e)}")
-
-        st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Build rich up-to-date context
+            context = f"""
+            You are an expert Shanghai Disneyland guide (November 2025+).
+            TODAY'S REAL INFO:
+            - Park hours: {park_info['hours']}
+            - Fireworks/Night show: {park_info['fireworks']}
+            - Notes: {park_info['notes']}
+            
+            STATIC KNOWLEDGE (from this app):
+            - Toilets: Over 30 locations, marked on official app. Western toilets always available.
+            - Best transport: Metro Line 11 direct or DiDi.
+            - Must-do rides: TRON, Pirates Battle, Zootopia hot-dog.
+            
+            Be short, practical, friendly. If unsure → tell them to check official app.
+            User question: {prompt}
+            """
+            
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        response = model.generate_content(context)
+                        ai_response = response.text
+                        st.markdown(ai_response)
+                        st.session_state.messages.append({"role": "assistant", "content": ai_response})
+                    except Exception as e:
+                        error_msg = "Sorry, I can't respond right now. Try again later!"
+                        st.error(f"Error: {str(e)}")
+                        st.markdown(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
 # Footer
 st.markdown("---")
-st.markdown("📱 **Official Website:** [Shanghai Disneyland](https://www.shanghaidisneyresort.com)")
-st.caption("Information subject to change. Please verify details on the official website.")
+st.markdown("Data from official Shanghai Disney Resort · Always double-check the official app for live wait times & changes")
