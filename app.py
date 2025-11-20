@@ -93,8 +93,22 @@ if page == "🏠 Overview":
         """, unsafe_allow_html=True)
 
     with col2:
-        st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/4/4f/Shanghai_Disneyland_Park_-_panoramio.jpg/320px-Shanghai_Disneyland_Park_-_panoramio.jpg",
-                caption="Shanghai Disneyland Resort", width='stretch')
+        # Display a beautiful welcome message instead of an image
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #FF6B35, #F7931E);
+            padding: 2rem;
+            border-radius: 15px;
+            color: white;
+            text-align: center;
+            font-size: 1.2rem;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        ">
+            🎢 Welcome to Shanghai Disneyland Resort! ✨<br>
+            <span style="font-size: 0.9rem; font-weight: normal;">Your magical adventure awaits!</span>
+        </div>
+        """, unsafe_allow_html=True)
 
 elif page == "🎢 Attractions":
     st.markdown('<div class="section-header">Attractions & Entertainment</div>', unsafe_allow_html=True)
