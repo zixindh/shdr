@@ -93,10 +93,15 @@ HOT_TOPIC_STOPWORDS_EN = {
     "just",
     "more",
     "news",
+    "bilibili",
+    "douyin",
     "park",
     "resort",
     "shanghai",
     "disney",
+    "weibo",
+    "xiaohongshu",
+    "xhs",
     "today",
     "trip",
     "visitor",
@@ -117,6 +122,10 @@ HOT_TOPIC_STOPWORDS_ZH = {
     "现场",
     "分享",
     "网友",
+    "小红书",
+    "抖音",
+    "微博",
+    "哔哩哔哩",
 }
 
 HOT_TOPIC_WEB_NOISE = {
