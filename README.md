@@ -10,6 +10,8 @@ A Streamlit dashboard to monitor how guests feel about their Shanghai Disney tri
   - General news coverage on Shanghai Disney
 - Scores each post/article as positive / neutral / negative (bilingual keyword model)
 - Stores records by day: `data/snapshots/YYYY-MM-DD.json`
+- Highlights **one hottest topic per day** (topic hit count + coverage) to reduce information overload
+- Keeps each item in **original language + translated version** for bilingual browsing
 - Supports update modes:
   - Near real-time (5-minute auto-refresh)
   - Daily snapshot (24-hour refresh)
@@ -37,6 +39,11 @@ streamlit run app.py
 - `APIFY_WEIBO_ACTOR_ID`
 
 If Apify is not configured, the app still runs using RSS-based social mention discovery + news ingestion.
+
+### Bilingual translation
+
+- Uses `deep-translator` (GoogleTranslator backend) for automatic cross-language display.
+- If translation is unavailable, the original text is still shown with a fallback message.
 
 ## Production ingestion pattern (recommended)
 

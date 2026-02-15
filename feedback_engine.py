@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,43 @@ NEGATIVE_WORDS = {
     "无语",
     "糟糕",
     "贵",
+}
+
+HOT_TOPIC_STOPWORDS_EN = {
+    "about",
+    "after",
+    "against",
+    "been",
+    "from",
+    "have",
+    "into",
+    "just",
+    "more",
+    "news",
+    "park",
+    "resort",
+    "shanghai",
+    "disney",
+    "today",
+    "trip",
+    "visitor",
+    "with",
+}
+
+HOT_TOPIC_STOPWORDS_ZH = {
+    "上海",
+    "上海迪士尼",
+    "迪士尼",
+    "乐园",
+    "度假区",
+    "游客",
+    "体验",
+    "新闻",
+    "反馈",
+    "感觉",
+    "现场",
+    "分享",
+    "网友",
 }
 
 
@@ -281,6 +319,92 @@ def _dedupe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for record in records:
         seen.setdefault(record["id"], record)
     return sorted(seen.values(), key=lambda item: item["published_at"], reverse=True)
+
+
+def detect_language(text: str) -> str:
+    sample = (text or "").strip()
+    if not sample:
+        return "unknown"
+    if _contains_cjk(sample):
+        return "zh"
+    if re.search(r"[A-Za-z]", sample):
+        return "en"
+    return "unknown"
+
+
+def _normalize_topic_token(token: str) -> str:
+    raw = (token or "").strip()
+    if not raw:
+        return ""
+
+    if _contains_cjk(raw):
+        cleaned = re.sub(r"(上海迪士尼|上海|迪士尼|乐园|度假区)", "", raw).strip()
+        if len(cleaned) < 2 or cleaned in HOT_TOPIC_STOPWORDS_ZH:
+            return ""
+        return cleaned
+
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "", raw).lower()
+    if len(cleaned) < 3 or cleaned in HOT_TOPIC_STOPWORDS_EN:
+        return ""
+    if cleaned.isdigit():
+        return ""
+    return cleaned
+
+
+def extract_topic_terms(text: str) -> list[str]:
+    sample = (text or "").strip()
+    if not sample:
+        return []
+
+    terms: list[str] = []
+    terms.extend(re.findall(r"#([\w\u4e00-\u9fff]{2,30})#?", sample))
+    terms.extend(re.findall(r"《([\w\u4e00-\u9fff]{2,30})》", sample))
+    zh_chunks = [
+        chunk
+        for chunk in re.split(r"[，。！？、；：,.!?:;()\[\]\s/|]+", sample)
+        if chunk and _contains_cjk(chunk)
+    ]
+    terms.extend(zh_chunks)
+    terms.extend(re.findall(r"[A-Za-z]{3,24}", sample))
+
+    normalized: list[str] = []
+    for term in terms:
+        normalized_term = _normalize_topic_token(term)
+        if normalized_term:
+            normalized.append(normalized_term)
+    return normalized
+
+
+def compute_daily_hot_topics(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        day = record.get("published_day", "")
+        if day:
+            by_day.setdefault(day, []).append(record)
+
+    daily_topics: list[dict[str, Any]] = []
+    for day, day_records in by_day.items():
+        counter: Counter[str] = Counter()
+        for record in day_records:
+            body = f"{record.get('title', '')} {record.get('text', '')}"
+            for term in set(extract_topic_terms(body)):
+                counter[term] += 1
+
+        if counter:
+            hot_topic, hits = counter.most_common(1)[0]
+        else:
+            hot_topic, hits = "overall_sentiment", len(day_records)
+        daily_topics.append(
+            {
+                "published_day": day,
+                "hot_topic": hot_topic,
+                "hot_topic_hits": hits,
+                "hot_topic_coverage": round(hits / max(1, len(day_records)), 3),
+                "mentions": len(day_records),
+            }
+        )
+
+    return sorted(daily_topics, key=lambda item: item["published_day"], reverse=True)
 
 
 def collect_feedback(
