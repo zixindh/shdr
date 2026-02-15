@@ -5,9 +5,9 @@ A Streamlit dashboard to monitor how guests feel about their Shanghai Disney tri
 ## What it does
 
 - Tracks mentions from:
-  - Xiaohongshu, Douyin, Weibo (**direct** via optional Apify actors)
-  - Social-domain mention discovery via Google News RSS fallback
-  - General news coverage on Shanghai Disney
+  - **Chinese mode (default)**: Xiaohongshu, Douyin, Weibo, Bilibili + Chinese news outlets
+  - **English mode (global sources)**: YouTube, X/Twitter, Reddit, Instagram + ABC/CNBC/Reuters/BBC/AP
+  - Social/domain discovery via Google News RSS + fallback retry logic
 - Scores each post/article as positive / neutral / negative (bilingual keyword model)
 - Stores records by day: `data/snapshots/YYYY-MM-DD.json`
 - Highlights **one hottest topic per day** (topic hit count + coverage) to reduce information overload
@@ -17,6 +17,7 @@ A Streamlit dashboard to monitor how guests feel about their Shanghai Disney tri
   - Daily snapshot (24-hour refresh)
   - Manual refresh
 - Includes an optional Gemini summary for selected day (`gemini-2.5-flash`)
+- Automatically stores source profile (`cn` / `global`) with each record
 
 ## Quick start
 

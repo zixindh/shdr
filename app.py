@@ -13,7 +13,8 @@ from streamlit_autorefresh import st_autorefresh
 
 from feedback_engine import (
     CN_TZ,
-    DEFAULT_QUERY,
+    DEFAULT_QUERY_CN,
+    DEFAULT_QUERY_GLOBAL,
     collect_feedback,
     compute_daily_hot_topics,
     connector_status,
@@ -97,6 +98,7 @@ def refresh_and_store(
     max_items: int,
     include_news: bool,
     include_social: bool,
+    source_profile: str,
     nonce: int,
 ) -> list[dict]:
     records = collect_feedback(
@@ -104,6 +106,7 @@ def refresh_and_store(
         max_items_per_source=max_items,
         include_news=include_news,
         include_social=include_social,
+        source_profile=source_profile,
     )
     save_records_by_day(records)
     return records
@@ -155,31 +158,61 @@ def topic_mask(frame: pd.DataFrame, topic: str) -> pd.Series:
     ].fillna("").str.contains(pattern, case=False, regex=True)
 
 
-st.markdown("## Shanghai Disney Guest Pulse Engine | 上海迪士尼游客反馈引擎")
-st.caption(
-    "Track daily guest sentiment from social + news, surface one hottest topic each day, and browse in bilingual mode. "
-    "按天追踪游客反馈，自动提炼每日热点，并提供双语阅读。"
-)
+st.markdown("## 上海迪士尼游客反馈引擎 | Shanghai Disney Guest Pulse Engine")
 
 if "refresh_nonce" not in st.session_state:
     st.session_state.refresh_nonce = 0
 
-st.sidebar.title("Control Center | 控制台")
-query = st.sidebar.text_input("Tracking query | 监测关键词", value=DEFAULT_QUERY)
+st.sidebar.title("控制台 | Control Center")
+ui_language = st.sidebar.selectbox("界面语言 / UI language", ["中文", "English"], index=0)
+source_profile = "cn" if ui_language == "中文" else "global"
+is_cn_ui = source_profile == "cn"
+
+
+def t(cn: str, en: str) -> str:
+    return cn if is_cn_ui else en
+
+
+st.caption(
+    t(
+        "按天追踪游客反馈，自动提炼每日热点，并支持原文+翻译阅读。",
+        "Track daily guest sentiment, surface one hot topic per day, and read original text with translation.",
+    )
+)
+
+default_query_by_profile = {
+    "cn": DEFAULT_QUERY_CN,
+    "global": DEFAULT_QUERY_GLOBAL,
+}
+default_query = default_query_by_profile[source_profile]
+if "query_text" not in st.session_state:
+    st.session_state.query_text = default_query
+if "query_profile" not in st.session_state:
+    st.session_state.query_profile = source_profile
+if st.session_state.query_profile != source_profile:
+    previous_default = default_query_by_profile.get(st.session_state.query_profile, DEFAULT_QUERY_CN)
+    if st.session_state.query_text.strip() == previous_default:
+        st.session_state.query_text = default_query
+    st.session_state.query_profile = source_profile
+
+query = st.sidebar.text_input(t("监测关键词", "Tracking query"), key="query_text")
 refresh_mode = st.sidebar.selectbox(
-    "Update mode | 更新模式",
+    t("更新模式", "Update mode"),
     ["Near real-time (5 min)", "Daily snapshot (24h)", "Manual"],
 )
-max_items = st.sidebar.slider("Max items per source | 每源抓取上限", 20, 120, 40, step=10)
-history_days = st.sidebar.slider("History window (days) | 历史天数", 7, 90, 30, step=1)
-feed_limit = st.sidebar.slider("Feed items shown | 信息流条数", 20, 120, 50, step=10)
-include_news = st.sidebar.toggle("Include news | 包含新闻", value=True)
-include_social = st.sidebar.toggle("Include social | 包含社媒", value=True)
-show_translation = st.sidebar.toggle("Bilingual translation | 双语翻译", value=True)
-focus_hot_topic = st.sidebar.toggle("Only hottest topic | 仅看当日热点", value=False)
-force_refresh = st.sidebar.button("Refresh now | 立即刷新", type="primary")
+max_items = st.sidebar.slider(t("每源抓取上限", "Max items per source"), 20, 120, 40, step=10)
+history_days = st.sidebar.slider(t("历史天数", "History window (days)"), 7, 90, 30, step=1)
+feed_limit = st.sidebar.slider(t("信息流条数", "Feed items shown"), 20, 120, 50, step=10)
+include_news = st.sidebar.toggle(t("包含新闻", "Include news"), value=True)
+include_social = st.sidebar.toggle(t("包含社媒", "Include social"), value=True)
+show_translation = st.sidebar.toggle(t("显示翻译", "Show translation"), value=True)
+focus_hot_topic = st.sidebar.toggle(t("仅看当日热点", "Only hottest topic"), value=False)
+force_refresh = st.sidebar.button(t("立即刷新", "Refresh now"), type="primary")
 
-if force_refresh:
+previous_profile = st.session_state.get("active_source_profile")
+profile_changed = previous_profile is not None and previous_profile != source_profile
+st.session_state.active_source_profile = source_profile
+if force_refresh or profile_changed:
     st.session_state.refresh_nonce += 1
 
 if refresh_mode == "Near real-time (5 min)":
@@ -189,49 +222,68 @@ elif refresh_mode == "Daily snapshot (24h)":
 
 today_key = datetime.now(CN_TZ).date().isoformat()
 all_history = load_history(days_back=history_days)
-has_today_snapshot = any(item.get("published_day") == today_key for item in all_history)
+has_profile_data = any((item.get("source_profile") or "cn") == source_profile for item in all_history)
+has_today_snapshot = any(
+    item.get("published_day") == today_key and (item.get("source_profile") or "cn") == source_profile
+    for item in all_history
+)
 should_refresh_live = (
     force_refresh
+    or profile_changed
     or refresh_mode == "Near real-time (5 min)"
     or (refresh_mode == "Daily snapshot (24h)" and not has_today_snapshot)
+    or not has_profile_data
 )
 
 if should_refresh_live:
-    with st.spinner("Pulling latest social + news signals... 正在拉取最新信号..."):
+    with st.spinner(t("正在拉取最新信号...", "Pulling latest social + news signals...")):
         refresh_and_store(
             query=query,
             max_items=max_items,
             include_news=include_news,
             include_social=include_social,
+            source_profile=source_profile,
             nonce=st.session_state.refresh_nonce,
         )
     all_history = load_history(days_back=history_days)
 
 if not all_history:
-    st.warning(
-        "No data yet. Click **Refresh now** or configure connectors. "
-        "暂无数据，请点击刷新或配置抓取连接器。"
-    )
-    status_df = pd.DataFrame(connector_status())
+    st.warning(t("暂无数据，请点击“立即刷新”或配置连接器。", "No data yet. Click Refresh now or configure connectors."))
+    status_df = pd.DataFrame(connector_status(source_profile=source_profile))
     st.dataframe(status_df, use_container_width=True, hide_index=True)
     st.stop()
 
 df = pd.DataFrame(all_history).drop_duplicates(subset=["id"])
+if "source_profile" not in df.columns:
+    df["source_profile"] = "cn"
+df["source_profile"] = df["source_profile"].fillna("cn")
+df = df[df["source_profile"] == source_profile]
+
+if df.empty:
+    st.warning(
+        t(
+            "当前语言模式暂无数据，系统将优先抓取对应来源。请点击“立即刷新”。",
+            "No data for this language mode yet. Click Refresh now to pull matching sources.",
+        )
+    )
+    st.dataframe(pd.DataFrame(connector_status(source_profile=source_profile)), use_container_width=True, hide_index=True)
+    st.stop()
+
 df["published_dt"] = pd.to_datetime(df["published_at"], utc=True, errors="coerce").dt.tz_convert(CN_TZ)
 df = df.dropna(subset=["published_dt"]).sort_values("published_dt", ascending=False)
 
 platforms = sorted(df["platform"].dropna().unique().tolist())
-selected_platforms = st.sidebar.multiselect("Platforms | 平台", options=platforms, default=platforms)
+selected_platforms = st.sidebar.multiselect(t("平台", "Platforms"), options=platforms, default=platforms)
 sentiments = ["positive", "neutral", "negative"]
-selected_sentiments = st.sidebar.multiselect("Sentiment | 情绪", options=sentiments, default=sentiments)
+selected_sentiments = st.sidebar.multiselect(t("情绪", "Sentiment"), options=sentiments, default=sentiments)
 source_types = sorted(df["source_kind"].dropna().unique().tolist())
 selected_source_types = st.sidebar.multiselect(
-    "Source type | 来源类型", options=source_types, default=source_types
+    t("来源类型", "Source type"), options=source_types, default=source_types
 )
 
 days = sorted(df["published_day"].dropna().unique().tolist(), reverse=True)
 default_day = today_key if today_key in days else days[0]
-selected_day = st.sidebar.selectbox("Browse day | 按天查看", options=days, index=days.index(default_day))
+selected_day = st.sidebar.selectbox(t("按天查看", "Browse day"), options=days, index=days.index(default_day))
 
 filtered_df = df[
     df["platform"].isin(selected_platforms)
@@ -259,18 +311,28 @@ if focus_hot_topic and selected_hot_topic:
         display_day_df = narrowed
 
 if display_day_df.empty:
-    st.info("No records match current filters for this day. 当前筛选在该日期无记录。")
+    st.info(t("当前筛选在该日期无记录。", "No records match current filters for this day."))
     st.stop()
 
 avg_score = float(display_day_df["sentiment_score"].mean())
 positive_share = float((display_day_df["sentiment_label"] == "positive").mean()) * 100
 social_mentions = int((display_day_df["source_kind"] == "social").sum())
 news_mentions = int((display_day_df["source_kind"] == "news").sum())
+profile_day_df = df[df["published_day"] == selected_day]
+profile_news_mentions = int((profile_day_df["source_kind"] == "news").sum())
+
+if include_news and profile_news_mentions == 0:
+    st.warning(
+        t(
+            "该日期暂未抓到新闻，系统已启用新闻兜底检索。可尝试扩大关键词后点击“立即刷新”。",
+            "No news found for this day. Fallback news collection is enabled; broaden query and refresh.",
+        )
+    )
 
 st.markdown(
     f"""
     <div class="glass">
-        <span class="topic-chip">Hot topic / 每日热点: {escape(selected_hot_topic or "overall_sentiment")}</span>
+        <span class="topic-chip">{escape(t("每日热点", "Hot topic"))}: {escape(selected_hot_topic or "overall_sentiment")}</span>
         <span style="color:#94a3b8;">{escape(selected_hot_topic_translation) if selected_hot_topic_translation else ""}</span>
     </div>
     """,
@@ -295,7 +357,7 @@ with k3:
     )
 with k4:
     st.markdown(
-        f'<div class="glass"><div class="kpi">{social_mentions}/{news_mentions}</div><div class="kpi-label">Social / News split</div></div>',
+        f'<div class="glass"><div class="kpi">{social_mentions}/{news_mentions}</div><div class="kpi-label">{t("社媒 / 新闻占比", "Social / News split")}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -447,28 +509,36 @@ with tab_feed:
                     <span class="tag">{escape(sentiment_chip(item.get("sentiment_label", "neutral")))}</span>
                     <span class="tag">{escape(item.get("published_day", ""))} {int(item.get("published_hour", 0)):02d}:00</span>
                 </div>
-                <div style="font-weight:600; margin-top:0.35rem;">Original / 原文: {escape(title)}</div>
+                <div style="font-weight:600; margin-top:0.35rem;">{escape(t("原文", "Original"))}: {escape(title)}</div>
                 <div style="color:#94a3b8; margin-top:0.18rem;">{escape(text[:320])}</div>
-                {f'<div style="font-weight:600; margin-top:0.35rem;">Translation / 翻译: {escape(translated_title)}</div><div style="color:#94a3b8; margin-top:0.18rem;">{escape(translated_text)}</div>' if show_translation else ''}
-                <div style="margin-top:0.35rem;"><a href="{escape(link)}" target="_blank">Open source ↗ / 查看来源</a></div>
+                {f'<div style="font-weight:600; margin-top:0.35rem;">{escape(t("翻译", "Translation"))}: {escape(translated_title)}</div><div style="color:#94a3b8; margin-top:0.18rem;">{escape(translated_text)}</div>' if show_translation else ''}
+                <div style="margin-top:0.35rem;"><a href="{escape(link)}" target="_blank">{escape(t("查看来源", "Open source ↗"))}</a></div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
 with tab_pipeline:
-    st.markdown("#### Ingestion blueprint (daily + near-real-time) | 数据管道")
-    st.markdown(
-        """
-        - **Xiaohongshu / Douyin / Weibo direct scraping**: use Apify actors (`APIFY_TOKEN` + actor IDs).
-        - **Fallback social discovery**: Google News RSS with `site:` filters.
-        - **News coverage**: Shanghai Disney query via RSS.
-        - **Daily organization**: persisted in `data/snapshots/YYYY-MM-DD.json`.
-        - **Hot-topic extraction**: one dominant topic per day to reduce overload.
-        - **Bilingual layer**: keep original text, append translation.
-        """
-    )
-    st.dataframe(pd.DataFrame(connector_status()), use_container_width=True, hide_index=True)
+    st.markdown("#### 数据管道 | Ingestion pipeline")
+    if source_profile == "cn":
+        st.markdown(
+            """
+            - **中文模式默认**：优先抓取小红书/抖音/微博/B站信号，并聚合中文新闻源。
+            - **新闻兜底**：主查询 + 多新闻站点 `site:` 检索 + 无地区参数回退。
+            - **每日组织**：写入 `data/snapshots/YYYY-MM-DD.json`。
+            - **双语展示**：保留原文，再附翻译，避免信息损失。
+            """
+        )
+    else:
+        st.markdown(
+            """
+            - **English mode = global sources**: YouTube, X/Twitter, Reddit, Instagram.
+            - **Global news outlets**: ABC, CNBC, Reuters, BBC, AP via RSS discovery.
+            - **Fallback news path**: primary query + outlet `site:` query + locale-agnostic retry.
+            - **Daily organization**: persisted in `data/snapshots/YYYY-MM-DD.json`.
+            """
+        )
+    st.dataframe(pd.DataFrame(connector_status(source_profile=source_profile)), use_container_width=True, hide_index=True)
     st.caption(
         "For production: run collectors with a scheduler and keep platform ToS/rate-limit compliance checks enabled."
         " 生产建议：使用定时任务并遵守平台条款和频率限制。"

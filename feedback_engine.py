@@ -17,13 +17,56 @@ from dateutil import parser as date_parser
 
 CN_TZ = timezone(timedelta(hours=8))
 SNAPSHOT_DIR = Path(__file__).resolve().parent / "data" / "snapshots"
-DEFAULT_QUERY = "上海迪士尼 OR Shanghai Disney"
+DEFAULT_QUERY_CN = "上海迪士尼 游客 体验"
+DEFAULT_QUERY_GLOBAL = "Shanghai Disney OR Shanghai Disneyland"
+DEFAULT_QUERY = DEFAULT_QUERY_CN
 
-SOCIAL_DOMAINS = {
-    "Xiaohongshu": "xiaohongshu.com",
-    "Douyin": "douyin.com",
-    "Weibo": "weibo.com",
-    "Bilibili": "bilibili.com",
+PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
+    "cn": {
+        "display_name": "Chinese guest mode",
+        "news_locale": {"hl": "zh-CN", "gl": "CN", "ceid": "CN:zh-Hans"},
+        "social_domains": {
+            "Xiaohongshu": "xiaohongshu.com",
+            "Douyin": "douyin.com",
+            "Weibo": "weibo.com",
+            "Bilibili": "bilibili.com",
+        },
+        "news_domains": {
+            "Xinhua": "news.cn",
+            "The Paper": "thepaper.cn",
+            "Sina": "sina.com.cn",
+            "NBD": "nbd.com.cn",
+            "Jiemian": "jiemian.com",
+        },
+        "fallback_news_queries": [
+            "上海迪士尼",
+            "上海迪士尼 游客",
+            "上海迪士尼 乐园 新闻",
+        ],
+    },
+    "global": {
+        "display_name": "Global guest mode",
+        "news_locale": {"hl": "en-US", "gl": "US", "ceid": "US:en"},
+        "social_domains": {
+            "YouTube": "youtube.com",
+            "X": "x.com",
+            "Twitter": "twitter.com",
+            "Reddit": "reddit.com",
+            "Instagram": "instagram.com",
+        },
+        "news_domains": {
+            "ABC": "abcnews.go.com",
+            "CNBC": "cnbc.com",
+            "Reuters": "reuters.com",
+            "BBC": "bbc.com",
+            "AP News": "apnews.com",
+        },
+        "fallback_news_queries": [
+            "Shanghai Disney",
+            "Shanghai Disneyland",
+            "Shanghai Disney Resort news",
+        ],
+    },
 }
 
 APIFY_ACTOR_ENV = {
@@ -217,6 +260,7 @@ def _build_record(
     url: str,
     author: str,
     published_at: Any,
+    source_profile: str = "cn",
 ) -> dict[str, Any]:
     published = _safe_parse_dt(published_at)
     published_cn = published.astimezone(CN_TZ)
@@ -227,6 +271,7 @@ def _build_record(
     return {
         "id": hashlib.sha1(base_id.encode("utf-8")).hexdigest(),
         "source_kind": source_kind,
+        "source_profile": source_profile,
         "platform": platform,
         "title": title or "Untitled post",
         "text": text,
@@ -241,27 +286,43 @@ def _build_record(
     }
 
 
-def _google_news_feed(query: str, max_items: int, source_kind: str, platform: str) -> list[dict[str, Any]]:
+def _google_news_feed(
+    query: str,
+    max_items: int,
+    source_kind: str,
+    platform: str,
+    locale: dict[str, str] | None = None,
+    source_profile: str = "cn",
+) -> list[dict[str, Any]]:
     encoded = quote_plus(query)
-    url = (
-        "https://news.google.com/rss/search"
-        f"?q={encoded}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-    )
-    feed = feedparser.parse(url)
+    urls: list[str] = []
+    if locale and locale.get("hl") and locale.get("gl") and locale.get("ceid"):
+        urls.append(
+            "https://news.google.com/rss/search"
+            f"?q={encoded}&hl={quote_plus(locale['hl'])}&gl={quote_plus(locale['gl'])}&ceid={quote_plus(locale['ceid'])}"
+        )
+    urls.append(f"https://news.google.com/rss/search?q={encoded}")
     records: list[dict[str, Any]] = []
 
-    for entry in feed.entries[:max_items]:
-        summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
-        record = _build_record(
-            source_kind=source_kind,
-            platform=platform,
-            title=entry.get("title", "").strip(),
-            text=re.sub(r"\s+", " ", summary).strip(),
-            url=entry.get("link", "").strip(),
-            author=_first(entry, ["author", "source"]),
-            published_at=entry.get("published") or entry.get("updated"),
-        )
-        records.append(record)
+    for url in urls:
+        feed = feedparser.parse(url)
+        for entry in feed.entries:
+            if len(records) >= max_items:
+                break
+            summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
+            record = _build_record(
+                source_kind=source_kind,
+                source_profile=source_profile,
+                platform=platform,
+                title=entry.get("title", "").strip(),
+                text=re.sub(r"\s+", " ", summary).strip(),
+                url=entry.get("link", "").strip(),
+                author=_first(entry, ["author", "source"]),
+                published_at=entry.get("published") or entry.get("updated"),
+            )
+            records.append(record)
+        if records:
+            break
     return records
 
 
@@ -290,7 +351,12 @@ def _run_apify_actor(actor_id: str, token: str, actor_input: dict[str, Any]) -> 
         return []
 
 
-def _fetch_apify_platform(platform: str, query: str, max_items: int) -> list[dict[str, Any]]:
+def _fetch_apify_platform(
+    platform: str,
+    query: str,
+    max_items: int,
+    source_profile: str = "cn",
+) -> list[dict[str, Any]]:
     token = os.getenv("APIFY_TOKEN", "").strip()
     actor_env = APIFY_ACTOR_ENV.get(platform)
     actor_id = os.getenv(actor_env, "").strip() if actor_env else ""
@@ -330,6 +396,7 @@ def _fetch_apify_platform(platform: str, query: str, max_items: int) -> list[dic
         records.append(
             _build_record(
                 source_kind="social",
+                source_profile=source_profile,
                 platform=platform,
                 title=title,
                 text=text,
@@ -346,6 +413,64 @@ def _dedupe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for record in records:
         seen.setdefault(record["id"], record)
     return sorted(seen.values(), key=lambda item: item["published_at"], reverse=True)
+
+
+def _get_profile_config(source_profile: str) -> dict[str, Any]:
+    return PROFILE_CONFIGS.get(source_profile, PROFILE_CONFIGS["cn"])
+
+
+def _collect_profile_news(
+    query: str,
+    max_items: int,
+    source_profile: str,
+) -> list[dict[str, Any]]:
+    config = _get_profile_config(source_profile)
+    locale = config["news_locale"]
+    domain_limit = max(5, max_items // 6)
+    query_candidates = [query] + [
+        text for text in config["fallback_news_queries"] if text.strip().lower() != query.strip().lower()
+    ]
+
+    records: list[dict[str, Any]] = []
+    for idx, candidate in enumerate(query_candidates[:3]):
+        per_query_limit = max_items if idx == 0 else max(8, max_items // 3)
+        records.extend(
+            _google_news_feed(
+                query=candidate,
+                max_items=per_query_limit,
+                source_kind="news",
+                platform="News",
+                locale=locale,
+                source_profile=source_profile,
+            )
+        )
+
+    for outlet, domain in config["news_domains"].items():
+        records.extend(
+            _google_news_feed(
+                query=f"({query}) site:{domain}",
+                max_items=domain_limit,
+                source_kind="news",
+                platform=outlet,
+                locale=locale,
+                source_profile=source_profile,
+            )
+        )
+
+    # If localized feed returns nothing, retry with locale-agnostic URL.
+    if not records:
+        records.extend(
+            _google_news_feed(
+                query=query,
+                max_items=max_items,
+                source_kind="news",
+                platform="News",
+                locale=None,
+                source_profile=source_profile,
+            )
+        )
+
+    return _dedupe(records)
 
 
 def detect_language(text: str) -> str:
@@ -446,31 +571,38 @@ def collect_feedback(
     max_items_per_source: int = 30,
     include_news: bool = True,
     include_social: bool = True,
+    source_profile: str = "cn",
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    config = _get_profile_config(source_profile)
+    locale = config["news_locale"]
+    social_domains = config["social_domains"]
 
     if include_news:
-        records.extend(
-            _google_news_feed(
-                query=query,
-                max_items=max_items_per_source,
-                source_kind="news",
-                platform="News",
-            )
-        )
+        records.extend(_collect_profile_news(query=query, max_items=max_items_per_source, source_profile=source_profile))
 
     if include_social:
         social_limit = max(10, max_items_per_source // 2)
-        for platform, domain in SOCIAL_DOMAINS.items():
+        for platform, domain in social_domains.items():
             records.extend(
                 _google_news_feed(
                     query=f"({query}) site:{domain}",
                     max_items=social_limit,
                     source_kind="social",
                     platform=platform,
+                    locale=locale,
+                    source_profile=source_profile,
                 )
             )
-            records.extend(_fetch_apify_platform(platform=platform, query=query, max_items=max_items_per_source))
+            if source_profile == "cn":
+                records.extend(
+                    _fetch_apify_platform(
+                        platform=platform,
+                        query=query,
+                        max_items=max_items_per_source,
+                        source_profile=source_profile,
+                    )
+                )
 
     return _dedupe(records)
 
@@ -538,9 +670,16 @@ def load_history(days_back: int = 30) -> list[dict[str, Any]]:
     return _dedupe(records)
 
 
-def connector_status() -> list[dict[str, str]]:
+def connector_status(source_profile: str = "cn") -> list[dict[str, str]]:
+    config = _get_profile_config(source_profile)
     token_exists = bool(os.getenv("APIFY_TOKEN", "").strip())
     statuses: list[dict[str, str]] = [
+        {
+            "connector": "Source profile",
+            "type": "Routing mode",
+            "status": source_profile,
+            "detail": config["display_name"],
+        },
         {
             "connector": "Google News RSS",
             "type": "News + Mention Discovery",
@@ -549,9 +688,32 @@ def connector_status() -> list[dict[str, str]]:
         }
     ]
 
+    for outlet, domain in config["news_domains"].items():
+        statuses.append(
+            {
+                "connector": outlet,
+                "type": "News outlet",
+                "status": "active",
+                "detail": f"site:{domain}",
+            }
+        )
+
+    for platform, domain in config["social_domains"].items():
+        statuses.append(
+            {
+                "connector": platform,
+                "type": "Social discovery",
+                "status": "active",
+                "detail": f"site:{domain}",
+            }
+        )
+
+    if source_profile != "cn":
+        return statuses
+
     for platform, env_name in APIFY_ACTOR_ENV.items():
         actor_id = os.getenv(env_name, "").strip()
-        configured = token_exists and bool(actor_id)
+        configured = token_exists and bool(actor_id) and platform in config["social_domains"]
         statuses.append(
             {
                 "connector": f"{platform} (Apify actor)",
