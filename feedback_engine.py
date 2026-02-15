@@ -20,7 +20,6 @@ CN_TZ = timezone(timedelta(hours=8))
 SNAPSHOT_DIR = Path(__file__).resolve().parent / "data" / "snapshots"
 DEFAULT_QUERY_CN = "上海迪士尼 游客 体验"
 DEFAULT_QUERY_GLOBAL = "Shanghai Disney OR Shanghai Disneyland"
-DEFAULT_QUERY = DEFAULT_QUERY_CN
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -228,7 +227,7 @@ HOT_TOPIC_WEB_NOISE = {
     "gt",
 }
 
-PR_RISK_KEYWORDS: dict[str, list[str]] = {
+RISK_SIGNAL_KEYWORDS: dict[str, list[str]] = {
     "queue_pressure": ["排队", "排队时间", "拥挤", "人多", "堵", "等待", "queue", "crowd", "wait time", "long line"],
     "service_quality": ["服务", "态度", "体验差", "投诉", "维权", "差评", "service", "staff", "complaint", "rude"],
     "ride_reliability": ["故障", "停运", "检修", "卡住", "事故", "延误", "breakdown", "closed", "maintenance", "delay"],
@@ -756,14 +755,14 @@ def _record_body(record: dict[str, Any]) -> str:
     return f"{record.get('title', '')} {record.get('text', '')}".lower()
 
 
-def compute_pr_brief(records: list[dict[str, Any]], source_profile: str = "cn") -> dict[str, Any]:
+def compute_media_brief(records: list[dict[str, Any]], source_profile: str = "cn") -> dict[str, Any]:
     config = _get_profile_config(source_profile)
     news_records = [item for item in records if item.get("source_kind") == "news"]
     social_records = [item for item in records if item.get("source_kind") == "social"]
     negative_records = [item for item in records if item.get("sentiment_label") == "negative"]
 
     risk_rows: list[dict[str, Any]] = []
-    for risk_key, terms in PR_RISK_KEYWORDS.items():
+    for risk_key, terms in RISK_SIGNAL_KEYWORDS.items():
         hits = 0
         negative_hits = 0
         for item in records:
@@ -847,7 +846,7 @@ def compute_pr_brief(records: list[dict[str, Any]], source_profile: str = "cn") 
 
 
 def collect_feedback(
-    query: str = DEFAULT_QUERY,
+    query: str = DEFAULT_QUERY_CN,
     max_items_per_source: int = 30,
     include_news: bool = True,
     include_social: bool = True,

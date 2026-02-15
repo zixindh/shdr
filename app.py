@@ -17,7 +17,7 @@ from feedback_engine import (
     DEFAULT_QUERY_GLOBAL,
     collect_feedback,
     compute_daily_hot_topics,
-    compute_pr_brief,
+    compute_media_brief,
     connector_status,
     detect_language,
     load_history,
@@ -370,14 +370,14 @@ if include_news and profile_news_mentions == 0:
         )
     )
 
-pr_brief = compute_pr_brief(display_day_df.to_dict("records"), source_profile=source_profile)
+media_brief = compute_media_brief(display_day_df.to_dict("records"), source_profile=source_profile)
 
 st.markdown(
     f"""
     <div class="glass">
         <span class="topic-chip">{escape(t("每日热点", "Hot topic"))}: {escape(selected_hot_topic or "overall_sentiment")}</span>
         <span style="color:#94a3b8;">{escape(selected_hot_topic_translation) if selected_hot_topic_translation else ""}</span>
-        {f'<span class="tag">{escape(t("本地媒体覆盖", "Local media coverage"))}: {pr_brief.get("local_outlet_coverage", 0)*100:.0f}%</span>' if source_profile == "cn" else ''}
+        {f'<span class="tag">{escape(t("本地媒体覆盖", "Local media coverage"))}: {media_brief.get("local_outlet_coverage", 0)*100:.0f}%</span>' if source_profile == "cn" else ''}
     </div>
     """,
     unsafe_allow_html=True,
@@ -405,9 +405,9 @@ with k4:
         unsafe_allow_html=True,
     )
 
-tab_pr, tab_hot, tab_pulse, tab_daily, tab_feed, tab_pipeline = st.tabs(
+tab_media, tab_hot, tab_pulse, tab_daily, tab_feed, tab_pipeline = st.tabs(
     [
-        "PR Command / 公关指挥台",
+        "Media Intelligence / 媒体情报",
         "Hot Topics / 每日热点",
         "Pulse Board / 总览",
         "Daily Navigator / 日维度",
@@ -416,8 +416,8 @@ tab_pr, tab_hot, tab_pulse, tab_daily, tab_feed, tab_pipeline = st.tabs(
     ]
 )
 
-with tab_pr:
-    st.markdown("#### PR command center | 公关指挥中心")
+with tab_media:
+    st.markdown("#### Media intelligence cockpit | 媒体情报驾驶舱")
     c1, c2, c3 = st.columns(3)
     coverage_label = (
         t("本地媒体覆盖率", "Local outlet coverage")
@@ -426,23 +426,23 @@ with tab_pr:
     )
     with c1:
         st.markdown(
-            f'<div class="glass"><div class="kpi">{pr_brief.get("news_mentions", 0)}</div><div class="kpi-label">{t("新闻提及", "News mentions")}</div></div>',
+            f'<div class="glass"><div class="kpi">{media_brief.get("news_mentions", 0)}</div><div class="kpi-label">{t("新闻提及", "News mentions")}</div></div>',
             unsafe_allow_html=True,
         )
     with c2:
         st.markdown(
-            f'<div class="glass"><div class="kpi">{pr_brief.get("negative_mentions", 0)}</div><div class="kpi-label">{t("负向总量", "Negative mentions")}</div></div>',
+            f'<div class="glass"><div class="kpi">{media_brief.get("negative_mentions", 0)}</div><div class="kpi-label">{t("负向总量", "Negative mentions")}</div></div>',
             unsafe_allow_html=True,
         )
     with c3:
-        coverage_pct = int(float(pr_brief.get("local_outlet_coverage", 0)) * 100)
+        coverage_pct = int(float(media_brief.get("local_outlet_coverage", 0)) * 100)
         st.markdown(
             f'<div class="glass"><div class="kpi">{coverage_pct}%</div><div class="kpi-label">{coverage_label}</div></div>',
             unsafe_allow_html=True,
         )
 
-    top_outlets = pd.DataFrame(pr_brief.get("top_outlets", []))
-    risk_table = pd.DataFrame(pr_brief.get("risk_table", []))
+    top_outlets = pd.DataFrame(media_brief.get("top_outlets", []))
+    risk_table = pd.DataFrame(media_brief.get("risk_table", []))
     if not top_outlets.empty:
         st.markdown(f"##### {t('主流媒体声量', 'Top outlet volume')}")
         st.dataframe(top_outlets.head(12), use_container_width=True, hide_index=True)
@@ -450,7 +450,7 @@ with tab_pr:
         st.markdown(f"##### {t('风险雷达', 'Risk radar')}")
         st.dataframe(risk_table.head(8), use_container_width=True, hide_index=True)
     st.markdown(f"##### {t('建议动作', 'Recommended actions')}")
-    for action in pr_brief.get("actions", []):
+    for action in media_brief.get("actions", []):
         st.markdown(f"- {action}")
 
 with tab_hot:

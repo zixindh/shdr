@@ -13,7 +13,7 @@ A Streamlit dashboard to monitor how guests feel about their Shanghai Disney tri
 - Scores each post/article as positive / neutral / negative (bilingual keyword model)
 - Stores records by day: `data/snapshots/YYYY-MM-DD.json`
 - Highlights **one hottest topic per day** (topic hit count + coverage) to reduce information overload
-- Adds a **PR Command Center** (risk radar, top outlets, local outlet coverage, recommended actions)
+- Adds a **Media Intelligence cockpit** (risk radar, top outlets, local outlet coverage, recommended actions)
 - Keeps each item in **original language + translated version** for bilingual browsing
 - Supports update modes:
   - Near real-time (5-minute auto-refresh)
@@ -57,6 +57,17 @@ If Apify is configured (sidebar input or env), the app performs deeper direct so
 2. Persist daily snapshots.
 3. Serve Streamlit dashboard from snapshot files for fast UI response.
 4. Keep platform ToS / rate-limit compliance checks enabled.
+
+## Code reference map
+
+- `app.py`
+  - Streamlit UI, language/source mode switch, daily navigation, media intelligence panels
+  - Optional session-only API key inputs (Gemini / Apify)
+- `feedback_engine.py`
+  - Source profiles (`cn` / `global`) and outlet/domain configuration
+  - Collection pipeline (RSS + search scraping + optional Apify)
+  - Daily topic extraction and media-risk summarization (`compute_media_brief`)
+  - Snapshot persistence and connector status reporting
 
 ## Notes
 
