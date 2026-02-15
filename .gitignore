@@ -10,6 +10,9 @@ __pycache__/
 # Streamlit cache
 .streamlit/
 
+# Runtime snapshot data
+data/snapshots/
+
 # OS files
 .DS_Store
 Thumbs.db

@@ -1,78 +1,51 @@
-# 🎢 Shanghai Disney Resort Guide
+# Shanghai Disney Guest Pulse Engine
 
-**Welcome to your magical companion for Shanghai Disney Resort!**
+A Streamlit dashboard to monitor how guests feel about their Shanghai Disney trip, with social + news ingestion, sentiment scoring, and day-based navigation.
 
-🌟 **Visit the live guide:** [https://shanghaidisney.streamlit.app/](https://shanghaidisney.streamlit.app/)
+## What it does
 
-This friendly guide helps Disney visitors like you discover everything about Shanghai Disney Resort - from thrilling attractions to delicious dining options, all in one easy-to-use place!
+- Tracks mentions from:
+  - Xiaohongshu, Douyin, Weibo (**direct** via optional Apify actors)
+  - Social-domain mention discovery via Google News RSS fallback
+  - General news coverage on Shanghai Disney
+- Scores each post/article as positive / neutral / negative (bilingual keyword model)
+- Stores records by day: `data/snapshots/YYYY-MM-DD.json`
+- Supports update modes:
+  - Near real-time (5-minute auto-refresh)
+  - Daily snapshot (24-hour refresh)
+  - Manual refresh
+- Includes an optional Gemini summary for selected day (`gemini-2.5-flash`)
 
-## ✨ What You Can Do
+## Quick start
 
-- **🏠 Learn About the Park**: Get to know Shanghai Disneyland and how to get there
-- **🎢 Explore Attractions**: Discover amazing rides and shows in each magical land
-- **🍽️ Find Great Food**: Browse dining options from quick bites to character meals
-- **🕐 Check Hours & Tickets**: See when the park is open and ticket information
-- **💬 Ask the AI Helper**: Chat with our friendly AI assistant for personalized recommendations!
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-## 🎯 Perfect For
+## Optional environment variables
 
-- First-time visitors planning their trip
-- Families looking for kid-friendly activities
-- Disney fans wanting to make the most of their visit
-- Anyone needing quick answers about the park
+### AI summary
 
-## 🎪 Park Highlights
+- `GEMINI_API_KEY`
 
-- **Six Magical Lands**: Mickey Avenue, Gardens of Imagination, Fantasyland, Tomorrowland, Treasure Cove
-- **Unique Experiences**: TRON Lightcycle Power Run, Pirates of the Caribbean: Battle for the Sunken Treasure
-- **Character Meet-and-Greets**: Disney Princesses, Mickey Mouse, and more!
-- **Spectacular Shows**: Parades, fireworks, and live entertainment
+### Direct social scraping (recommended for production)
 
----
+- `APIFY_TOKEN`
+- `APIFY_XHS_ACTOR_ID`
+- `APIFY_DOUYIN_ACTOR_ID`
+- `APIFY_WEIBO_ACTOR_ID`
 
-## 🛠️ For Developers & Contributors
+If Apify is not configured, the app still runs using RSS-based social mention discovery + news ingestion.
 
-### Local Development Setup
+## Production ingestion pattern (recommended)
 
-1. **Get the code**:
-   ```bash
-   git clone https://github.com/zixindh/shdr.git
-   cd shdr
-   ```
+1. Schedule `collect_feedback` every 5-15 minutes (or hourly) via cron/GitHub Actions.
+2. Persist daily snapshots.
+3. Serve Streamlit dashboard from snapshot files for fast UI response.
+4. Keep platform ToS / rate-limit compliance checks enabled.
 
-2. **Install what you need**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+## Notes
 
-3. **Set up the AI chat** (optional):
-   - Get a free API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-   - For local testing: `export GEMINI_API_KEY=your_key_here`
-   - For online deployment: Add `GEMINI_API_KEY` to Streamlit Cloud secrets
-
-4. **Run locally**:
-   ```bash
-   streamlit run app.py
-   ```
-
-### Tech Stack
-- **Frontend**: Streamlit (Python web app)
-- **AI**: Google Gemini 2.5 Flash
-- **Data**: Official Shanghai Disneyland Resort information
-
-### Contributing
-Found a way to make this guide even better? We'd love your help! Feel free to suggest improvements or report any issues.
-
----
-
-## 📋 Important Notes
-
-- Information is based on official Shanghai Disneyland Resort sources
-- Park hours and offerings may change - please verify on the official website
-- This is a fan-made guide to help visitors, not an official Disney resource
-
-**Have a magical time at Shanghai Disney Resort! 🎠✨**
-
----
-
-*Built with ❤️ for Disney visitors everywhere*
+- This project is for public-signal monitoring only.
+- Always validate major claims against official channels.

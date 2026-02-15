@@ -1,232 +1,352 @@
-import streamlit as st
+from __future__ import annotations
+
 import os
 from datetime import datetime
-from google import genai
 
-# Page config
-st.set_page_config(
-    page_title="Shanghai Disney Quick Guide",
-    page_icon="🏰",
-    layout="wide",
-    initial_sidebar_state="expanded"
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from google import genai
+from streamlit_autorefresh import st_autorefresh
+
+from feedback_engine import (
+    CN_TZ,
+    DEFAULT_QUERY,
+    collect_feedback,
+    connector_status,
+    load_history,
+    save_records_by_day,
 )
 
-# Park information (static for reliability - users should check official app for live data)
-park_info = {
-    "hours": "9:00 AM – 9:00 PM (typical operating hours)",
-    "fireworks": "Illuminations fireworks show",
-    "notes": "Download official app for real-time updates"
-}
+st.set_page_config(
+    page_title="Shanghai Disney Guest Pulse",
+    page_icon="🛰️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# Real-time banner (always visible)
-st.markdown(f"""
-<div style="background:#FF6B35;color:white;padding:1rem;text-align:center;font-size:1.3rem;font-weight:bold;">
-🏰 Today ({datetime.now().strftime('%b %d, %Y')}): {park_info['hours']} | Fireworks: {park_info['fireworks']}
-<br><small>{park_info['notes']}</small>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+<style>
+    .stApp {
+        background: radial-gradient(circle at 15% 10%, #172554 0%, #0b1020 35%, #020617 100%);
+        color: #e2e8f0;
+    }
+    .block-container { padding-top: 1.2rem; padding-bottom: 1.2rem; }
+    .glass {
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 14px;
+        padding: 0.9rem 1rem;
+        margin-bottom: 0.8rem;
+        box-shadow: 0 10px 28px rgba(2, 6, 23, 0.35);
+    }
+    .kpi { font-size: 1.8rem; font-weight: 700; line-height: 1.1; }
+    .kpi-label { font-size: 0.85rem; color: #94a3b8; margin-top: 0.25rem; }
+    .tag {
+        display: inline-block;
+        font-size: 0.72rem;
+        font-weight: 600;
+        padding: 0.15rem 0.45rem;
+        border-radius: 999px;
+        margin-right: 0.35rem;
+        margin-bottom: 0.35rem;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        background: rgba(15, 23, 42, 0.7);
+    }
+    a { color: #93c5fd !important; text-decoration: none !important; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
-# Initialize Gemini API
+
 @st.cache_resource
-def init_gemini():
-    # Debug: Check API key sources
-    env_key = os.environ.get("GEMINI_API_KEY")
-    secrets_key = None
-    try:
-        secrets_key = st.secrets.get("GEMINI_API_KEY")
-    except Exception as e:
-        secrets_error = str(e)
+def init_gemini() -> genai.Client | None:
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not key:
+        try:
+            key = st.secrets.get("GEMINI_API_KEY", "")
+        except Exception:
+            key = ""
+    return genai.Client(api_key=key) if key else None
 
-    # Use environment variable first (local), then secrets (cloud)
-    api_key = env_key or secrets_key
 
-    if api_key:
-        return genai.Client(api_key=api_key)
-    return None
+@st.cache_data(ttl=300, show_spinner=False)
+def refresh_and_store(
+    query: str,
+    max_items: int,
+    include_news: bool,
+    include_social: bool,
+    nonce: int,
+) -> list[dict]:
+    records = collect_feedback(
+        query=query,
+        max_items_per_source=max_items,
+        include_news=include_news,
+        include_social=include_social,
+    )
+    save_records_by_day(records)
+    return records
 
-client = init_gemini()
 
-# Sidebar
-st.sidebar.title("Quick Navigation")
-page = st.sidebar.radio("Go to:", [
-    "Overview", "Getting to the Park", "Attractions", "Dining", 
-    "Toilets & Baby Care", "Hours & Tickets", "AI Assistant"
-], label_visibility="collapsed")
+def sentiment_chip(label: str) -> str:
+    if label == "positive":
+        return "🟢 positive"
+    if label == "negative":
+        return "🔴 negative"
+    return "🟡 neutral"
 
-st.markdown("### Shanghai Disney Quick Guide")
-st.caption("Fast, no-nonsense info for busy guests · Data updated live where possible")
 
-# ====================== PAGES ======================
+def pretty_score(value: float) -> str:
+    return f"{value:+.2f}"
 
-if page == "Overview":
-    st.write("Unique castle, TRON, Pirates battle ride. 8 lands now with Zootopia (opened 2023). Download the official Shanghai Disney Resort app for real-time wait times & map.")
 
-if page == "Getting to the Park":
-    st.markdown("### 🚇 Best Ways to Shanghai Disneyland (2025)")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("#### Metro Line 11 (Cheapest & Most Reliable)")
-        st.write("""
-        - Direct to **Disney Resort Station** (terminal stop)
-        - From People's Square / Nanjing Rd: ~50–70 min, ¥7
-        - First train ~6:00 AM, last ~22:30
-        - Exit 1 or 2 → 5–10 min walk to park gates
-        - Pro tip: Buy a Shanghai Public Transportation Card or use WeChat/Alipay
-        """)
-    
-    with col2:
-        st.markdown("#### DiDi / Taxi (Fastest with luggage/kids)")
-        st.write("""
-        - DiDi English version works great
-        - From downtown: 40–70 min, ¥80–150
-        - From PVG airport: ~30–45 min, ¥150–200
-        - Drop-off: Search “上海迪士尼乐园” or “Disney Car & Coach Parking Lot”
-        - Early entry hotel guests: Ask for “Mickey Parking Lot” (closer)
-        """)
-    
-    st.info("Avoid random taxis outside the resort at closing — use DiDi to avoid scams.")
+st.markdown("## Shanghai Disney Guest Pulse Engine")
+st.caption(
+    "Monitor guest sentiment across social + news channels, organized by day with near-real-time refresh."
+)
 
-if page == "Attractions":
-    st.markdown("### 🎢 Must-Know Rides & Shows")
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Mickey Ave", "Gardens", "Fantasyland", "Tomorrowland", "Treasure Cove", "Zootopia"])
+if "refresh_nonce" not in st.session_state:
+    st.session_state.refresh_nonce = 0
 
-    with tab1:
-        st.write("**Parades & Character Greetings** - Main street with Disney parades and meet-and-greets.")
+st.sidebar.title("Control Center")
+query = st.sidebar.text_input("Tracking query", value=DEFAULT_QUERY)
+refresh_mode = st.sidebar.selectbox(
+    "Update mode",
+    ["Near real-time (5 min)", "Daily snapshot (24h)", "Manual"],
+)
+max_items = st.sidebar.slider("Max items per source", 20, 120, 40, step=10)
+history_days = st.sidebar.slider("History window (days)", 7, 90, 30, step=1)
+include_news = st.sidebar.toggle("Include news", value=True)
+include_social = st.sidebar.toggle("Include social", value=True)
+force_refresh = st.sidebar.button("Refresh now", type="primary")
 
-    with tab2:
-        st.write("**Voyage to the Crystal Grotto** (Disney Princess dark ride) - Best for kids. Dumbo ride nearby.")
+if force_refresh:
+    st.session_state.refresh_nonce += 1
 
-    with tab3:
-        st.write("**Seven Dwarfs Mine Train** - Gentle coaster. Peter Pan's Flight. Enchanted Storybook Castle.")
+if refresh_mode == "Near real-time (5 min)":
+    st_autorefresh(interval=5 * 60 * 1000, key="pulse-realtime")
+elif refresh_mode == "Daily snapshot (24h)":
+    st_autorefresh(interval=24 * 60 * 60 * 1000, key="pulse-daily")
 
-    with tab4:
-        st.write("**TRON Lightcycle Power Run** - Must-do! Space Mountain. Buzz Lightyear.")
+today_key = datetime.now(CN_TZ).date().isoformat()
+all_history = load_history(days_back=history_days)
+has_today_snapshot = any(item.get("published_day") == today_key for item in all_history)
+should_refresh_live = (
+    force_refresh
+    or refresh_mode == "Near real-time (5 min)"
+    or (refresh_mode == "Daily snapshot (24h)" and not has_today_snapshot)
+)
 
-    with tab5:
-        st.write("**Pirates of the Caribbean: Battle for the Sunken Treasure** - Boat ride with drops.")
+if should_refresh_live:
+    with st.spinner("Pulling latest social + news signals..."):
+        refresh_and_store(
+            query=query,
+            max_items=max_items,
+            include_news=include_news,
+            include_social=include_social,
+            nonce=st.session_state.refresh_nonce,
+        )
+    all_history = load_history(days_back=history_days)
 
-    with tab6:
-        st.write("**Zootopia** - New land (2023). Hot dog eating contest show. Gentle rides for families.")
+if not all_history:
+    st.warning(
+        "No data yet. Click **Refresh now** or configure source connectors to start collecting records."
+    )
+    status_df = pd.DataFrame(connector_status())
+    st.dataframe(status_df, use_container_width=True, hide_index=True)
+    st.stop()
 
-if page == "Dining":
-    st.markdown("### 🍽️ Food Options")
-    col1, col2 = st.columns(2)
+df = pd.DataFrame(all_history).drop_duplicates(subset=["id"])
+df["published_dt"] = pd.to_datetime(df["published_at"], utc=True, errors="coerce").dt.tz_convert(CN_TZ)
+df = df.dropna(subset=["published_dt"]).sort_values("published_dt", ascending=False)
 
-    with col1:
-        st.markdown("#### Quick Service")
-        st.write("- **Donald's Diner** (American burgers/hot dogs)")
-        st.write("- **Royal Banquet Hall** (Chinese dishes)")
-        st.write("- **Wandering Moon Teahouse** (Asian fusion)")
+platforms = sorted(df["platform"].dropna().unique().tolist())
+selected_platforms = st.sidebar.multiselect("Platforms", options=platforms, default=platforms)
+sentiments = ["positive", "neutral", "negative"]
+selected_sentiments = st.sidebar.multiselect("Sentiment", options=sentiments, default=sentiments)
+source_types = sorted(df["source_kind"].dropna().unique().tolist())
+selected_source_types = st.sidebar.multiselect(
+    "Source type", options=source_types, default=source_types
+)
 
-    with col2:
-        st.markdown("#### Table Service (Reservations Recommended)")
-        st.write("- **Crystal Palace Restaurant**")
-        st.write("- **Walt's Restaurant**")
-        st.write("- **Enchanted Tale Restaurant** (character dining)")
+days = sorted(df["published_day"].dropna().unique().tolist(), reverse=True)
+default_day = today_key if today_key in days else days[0]
+selected_day = st.sidebar.selectbox("Browse day", options=days, index=days.index(default_day))
 
-    st.info("Best bet: Quick service for speed. Make reservations for table service via official app.")
+filtered_df = df[
+    df["platform"].isin(selected_platforms)
+    & df["sentiment_label"].isin(selected_sentiments)
+    & df["source_kind"].isin(selected_source_types)
+]
+day_df = filtered_df[filtered_df["published_day"] == selected_day]
 
-if page == "Toilets & Baby Care":
-    st.markdown("### 🚽 Toilet Locations (Every guest asks this!)")
-    st.write("""
-    There are **over 30 toilet facilities** inside the park — marked on the official app map (filter → Restrooms).
-    
-    Quick list of the most useful ones (always clean, air-conditioned):
-    - Entrance / Mickey Avenue — right after security
-    - Near TRON (Tomorrowland) — biggest & least crowded
-    - Behind Enchanted Storybook Castle (Fantasyland)
-    - Treasure Cove — next to Pirates
-    - Zootopia — near the hot-dog stand
-    - Adventure Isle — near Roaring Rapids
-    - Gardens of Imagination — near Dumbo
-    
-    **Western sitting toilets** are always available (usually 20–30% of stalls, marked with ♿ or at the back).
-    
-    Baby Care Centers (diaper changing, nursing, microwave):
-    - Mickey Avenue (main one)
-    - Fantasyland (near Alice Wonderland Maze)
-    """)
-    st.info("Use the official Shanghai Disney Resort app → Map → filter 'Restrooms' for GPS directions.")
+if day_df.empty:
+    st.info("No records match current filters for this day.")
+    st.stop()
 
-if page == "Hours & Tickets":
-    st.write(f"**Live today:** {park_info['hours']}")
-    st.write("Tickets: Buy only on official app/site. 1-day from ¥399–¥799 depending on date.")
+avg_score = float(day_df["sentiment_score"].mean()) if len(day_df) else 0.0
+positive_share = float((day_df["sentiment_label"] == "positive").mean()) * 100
+social_mentions = int((day_df["source_kind"] == "social").sum())
+news_mentions = int((day_df["source_kind"] == "news").sum())
 
-if page == "AI Assistant":
-    st.markdown("### 🤖 Smart Disney Assistant")
+k1, k2, k3, k4 = st.columns(4)
+with k1:
+    st.markdown(
+        f'<div class="glass"><div class="kpi">{len(day_df)}</div><div class="kpi-label">Mentions on {selected_day}</div></div>',
+        unsafe_allow_html=True,
+    )
+with k2:
+    st.markdown(
+        f'<div class="glass"><div class="kpi">{pretty_score(avg_score)}</div><div class="kpi-label">Average sentiment</div></div>',
+        unsafe_allow_html=True,
+    )
+with k3:
+    st.markdown(
+        f'<div class="glass"><div class="kpi">{positive_share:.0f}%</div><div class="kpi-label">Positive share</div></div>',
+        unsafe_allow_html=True,
+    )
+with k4:
+    st.markdown(
+        f'<div class="glass"><div class="kpi">{social_mentions}/{news_mentions}</div><div class="kpi-label">Social / news split</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    if client is None:
-        st.error("🤖 AI Assistant is currently unavailable. Please check your API key configuration.")
+tab_pulse, tab_daily, tab_feed, tab_pipeline = st.tabs(
+    ["Pulse Board", "Daily Navigator", "Live Feed", "Pipeline"]
+)
 
-        # Debug information
-        with st.expander("🔍 Debug Information"):
-            env_key = os.environ.get("GEMINI_API_KEY")
-            secrets_available = False
-            secrets_error = "No error"
-            try:
-                test_secret = st.secrets.get("GEMINI_API_KEY")
-                secrets_available = test_secret is not None
-            except Exception as e:
-                secrets_error = str(e)
+with tab_pulse:
+    trend_df = (
+        filtered_df.groupby("published_day", as_index=False)
+        .agg(avg_sentiment=("sentiment_score", "mean"), mentions=("id", "count"))
+        .sort_values("published_day")
+    )
+    platform_df = (
+        day_df.groupby("platform", as_index=False).agg(mentions=("id", "count")).sort_values(
+            "mentions", ascending=False
+        )
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        fig_trend = px.line(
+            trend_df,
+            x="published_day",
+            y="avg_sentiment",
+            markers=True,
+            title="Daily Sentiment Trend",
+            template="plotly_dark",
+        )
+        fig_trend.update_layout(height=340, margin=dict(t=40, b=20, l=10, r=10))
+        st.plotly_chart(fig_trend, use_container_width=True)
+    with c2:
+        fig_platform = px.bar(
+            platform_df,
+            x="platform",
+            y="mentions",
+            title=f"Platform Volume on {selected_day}",
+            template="plotly_dark",
+        )
+        fig_platform.update_layout(height=340, margin=dict(t=40, b=20, l=10, r=10))
+        st.plotly_chart(fig_platform, use_container_width=True)
 
-            st.write("**Environment Variable (GEMINI_API_KEY):**", "✅ Set" if env_key else "❌ Not set")
-            st.write("**Streamlit Secrets (GEMINI_API_KEY):**", "✅ Available" if secrets_available else f"❌ Error: {secrets_error}")
+    top_mentions = day_df.sort_values("sentiment_score").head(5)
+    st.markdown("#### Most negative signals (priority to investigate)")
+    st.dataframe(
+        top_mentions[["published_dt", "platform", "sentiment_label", "title", "url"]],
+        use_container_width=True,
+        hide_index=True,
+    )
 
-            if not env_key and not secrets_available:
-                st.write("**Solution:** Set `GEMINI_API_KEY` in Streamlit Cloud secrets or as environment variable")
+with tab_daily:
+    st.markdown(f"#### Day view: {selected_day}")
+    hourly = (
+        day_df.groupby("published_hour", as_index=False)
+        .agg(mentions=("id", "count"), avg_sentiment=("sentiment_score", "mean"))
+        .sort_values("published_hour")
+    )
+    fig_hourly = px.bar(
+        hourly,
+        x="published_hour",
+        y="mentions",
+        color="avg_sentiment",
+        color_continuous_scale="RdYlGn",
+        range_color=(-1, 1),
+        title="Hourly mention volume + sentiment",
+        template="plotly_dark",
+    )
+    fig_hourly.update_layout(height=320, margin=dict(t=40, b=20, l=10, r=10))
+    st.plotly_chart(fig_hourly, use_container_width=True)
 
-        st.info("💡 **Setup Required:** Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey) and set it as `GEMINI_API_KEY` in Streamlit Cloud secrets.")
-    else:
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        # Display chat history
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        # Chat input
-        if prompt := st.chat_input("Ask anything about Shanghai Disney..."):
-            # Add user message to history
-            st.session_state.messages.append({"role": "user", "content": prompt})
-
-            # Display user message
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            # Generate AI response
-            try:
-                context = f"""
-                You are a helpful AI assistant for Shanghai Disneyland Resort. Provide accurate information about:
-                - Park attractions and entertainment
-                - Dining options and recommendations
-                - Operating hours and ticket information
-                - Guest services and accessibility
-                - Park navigation and tips
-                - Weather considerations and seasonal events
-
-                Current park info: Hours: {park_info['hours']}, Fireworks: {park_info['fireworks']}
-
-                Always be friendly, accurate, and focused on enhancing the guest experience.
-                If you don't know specific details, direct guests to check the official Shanghai Disneyland website or app.
-                """
-
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash", contents=f"{context}\n\nUser question: {prompt}"
+    client = init_gemini()
+    if client is not None:
+        if st.button("Generate AI day summary", key="ai-summary"):
+            with st.spinner("Generating summary..."):
+                sample_rows = day_df.head(40)[
+                    ["platform", "sentiment_label", "title", "text"]
+                ].to_dict("records")
+                prompt = (
+                    "You are a market intelligence analyst. Summarize guest feedback about Shanghai Disney. "
+                    "Output: 1) top positives 2) top risks 3) immediate actions in bullet points.\n\n"
+                    f"Data for {selected_day}: {sample_rows}"
                 )
-                ai_response = response.text
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                )
+                st.markdown(response.text)
+    else:
+        st.caption("Set GEMINI_API_KEY to enable AI day summaries.")
 
-                # Add AI response to history
-                st.session_state.messages.append({"role": "assistant", "content": ai_response})
+    view_df = day_df[
+        [
+            "published_dt",
+            "platform",
+            "source_kind",
+            "sentiment_label",
+            "sentiment_score",
+            "title",
+            "url",
+        ]
+    ].rename(columns={"published_dt": "time_cn"})
+    st.dataframe(view_df, use_container_width=True, hide_index=True)
 
-                # Display AI response
-                with st.chat_message("assistant"):
-                    st.markdown(ai_response)
+with tab_feed:
+    st.markdown(f"#### Live feed · {selected_day}")
+    for item in day_df.head(120).to_dict("records"):
+        title = item.get("title", "Untitled")
+        text = item.get("text", "")
+        link = item.get("url", "")
+        st.markdown(
+            f"""
+            <div class="glass">
+                <div>
+                    <span class="tag">{item.get("platform", "unknown")}</span>
+                    <span class="tag">{item.get("source_kind", "unknown")}</span>
+                    <span class="tag">{sentiment_chip(item.get("sentiment_label", "neutral"))}</span>
+                    <span class="tag">{item.get("published_day")} {int(item.get("published_hour", 0)):02d}:00</span>
+                </div>
+                <div style="font-weight:600; margin-top:0.35rem;">{title}</div>
+                <div style="color:#94a3b8; margin-top:0.25rem;">{text[:280]}</div>
+                <div style="margin-top:0.35rem;"><a href="{link}" target="_blank">Open source ↗</a></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-            except Exception as e:
-                st.error(f"❌ Error generating response: {str(e)}")
-
-# Footer
-st.markdown("---")
-st.markdown("Data from official Shanghai Disney Resort · Always double-check the official app for live wait times & changes")
+with tab_pipeline:
+    st.markdown("#### Ingestion blueprint (daily + near-real-time)")
+    st.markdown(
+        """
+        - **Xiaohongshu / Douyin / Weibo direct scraping**: use Apify actors (configure `APIFY_TOKEN` + actor IDs).
+        - **Fallback social discovery**: Google News RSS with `site:` filters for each social domain.
+        - **News coverage**: Shanghai Disney query from Google News RSS.
+        - **Daily organization**: records are persisted to `data/snapshots/YYYY-MM-DD.json`.
+        - **Refresh modes**: manual, 24h snapshot, or 5-min auto-refresh.
+        """
+    )
+    st.dataframe(pd.DataFrame(connector_status()), use_container_width=True, hide_index=True)
+    st.caption(
+        "For production: run collectors via scheduler (cron/GitHub Actions) and keep platform ToS compliance checks enabled."
+    )
