@@ -118,6 +118,18 @@ HOT_TOPIC_STOPWORDS_ZH = {
     "网友",
 }
 
+HOT_TOPIC_WEB_NOISE = {
+    "com",
+    "cn",
+    "net",
+    "org",
+    "www",
+    "http",
+    "https",
+    "html",
+    "news",
+}
+
 
 def _contains_cjk(token: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in token)
@@ -344,7 +356,11 @@ def _normalize_topic_token(token: str) -> str:
         return cleaned
 
     cleaned = re.sub(r"[^A-Za-z0-9]+", "", raw).lower()
-    if len(cleaned) < 3 or cleaned in HOT_TOPIC_STOPWORDS_EN:
+    if (
+        len(cleaned) < 3
+        or cleaned in HOT_TOPIC_STOPWORDS_EN
+        or cleaned in HOT_TOPIC_WEB_NOISE
+    ):
         return ""
     if cleaned.isdigit():
         return ""
@@ -355,6 +371,8 @@ def extract_topic_terms(text: str) -> list[str]:
     sample = (text or "").strip()
     if not sample:
         return []
+    sample = re.sub(r"https?://\S+|www\.\S+", " ", sample)
+    sample = re.sub(r"\b[a-z0-9.-]+\.(com|cn|net|org)\b", " ", sample, flags=re.I)
 
     terms: list[str] = []
     terms.extend(re.findall(r"#([\w\u4e00-\u9fff]{2,30})#?", sample))
