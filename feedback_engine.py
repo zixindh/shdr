@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -128,6 +129,11 @@ HOT_TOPIC_WEB_NOISE = {
     "https",
     "html",
     "news",
+    "nbsp",
+    "amp",
+    "quot",
+    "lt",
+    "gt",
 }
 
 
@@ -368,9 +374,10 @@ def _normalize_topic_token(token: str) -> str:
 
 
 def extract_topic_terms(text: str) -> list[str]:
-    sample = (text or "").strip()
+    sample = html.unescape((text or "").strip()).replace("\xa0", " ")
     if not sample:
         return []
+    sample = re.sub(r"&[A-Za-z]+;", " ", sample)
     sample = re.sub(r"https?://\S+|www\.\S+", " ", sample)
     sample = re.sub(r"\b[a-z0-9.-]+\.(com|cn|net|org)\b", " ", sample, flags=re.I)
 
