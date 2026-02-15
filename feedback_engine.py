@@ -9,10 +9,11 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import feedparser
 import requests
+from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
 CN_TZ = timezone(timedelta(hours=8))
@@ -20,6 +21,12 @@ SNAPSHOT_DIR = Path(__file__).resolve().parent / "data" / "snapshots"
 DEFAULT_QUERY_CN = "上海迪士尼 游客 体验"
 DEFAULT_QUERY_GLOBAL = "Shanghai Disney OR Shanghai Disneyland"
 DEFAULT_QUERY = DEFAULT_QUERY_CN
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    )
+}
 
 PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
     "cn": {
@@ -43,6 +50,7 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "上海迪士尼 游客",
             "上海迪士尼 乐园 新闻",
         ],
+        "ddg_region": "cn-zh",
     },
     "global": {
         "display_name": "Global guest mode",
@@ -66,6 +74,7 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "Shanghai Disneyland",
             "Shanghai Disney Resort news",
         ],
+        "ddg_region": "us-en",
     },
 }
 
@@ -252,6 +261,14 @@ def _first(item: dict[str, Any], keys: list[str], default: str = "") -> str:
     return default
 
 
+def _resolve_secret(key: str, auth_config: dict[str, str] | None = None) -> str:
+    if auth_config:
+        value = (auth_config.get(key) or "").strip()
+        if value:
+            return value
+    return os.getenv(key, "").strip()
+
+
 def _build_record(
     source_kind: str,
     platform: str,
@@ -326,13 +343,124 @@ def _google_news_feed(
     return records
 
 
+def _extract_duckduckgo_url(raw_url: str) -> str:
+    if not raw_url:
+        return ""
+    if raw_url.startswith("//"):
+        return f"https:{raw_url}"
+    if raw_url.startswith("/"):
+        parsed = urlparse(f"https://duckduckgo.com{raw_url}")
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        return unquote(target) if target else ""
+    return raw_url
+
+
+def _duckduckgo_search(query: str, max_items: int, region: str = "") -> list[dict[str, str]]:
+    params = {"q": query}
+    if region:
+        params["kl"] = region
+    try:
+        response = requests.get(
+            "https://duckduckgo.com/html/",
+            params=params,
+            timeout=30,
+            headers=REQUEST_HEADERS,
+        )
+        response.raise_for_status()
+    except Exception:
+        return []
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    results: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for card in soup.select("div.result"):
+        if len(results) >= max_items:
+            break
+        anchor = card.select_one("a.result__a") or card.select_one("h2 a")
+        if anchor is None:
+            continue
+        url = _extract_duckduckgo_url((anchor.get("href") or "").strip())
+        if not url or url in seen_urls:
+            continue
+        snippet_node = card.select_one(".result__snippet")
+        snippet = snippet_node.get_text(" ", strip=True) if snippet_node else ""
+        title = anchor.get_text(" ", strip=True)
+        results.append({"title": title, "text": snippet, "url": url})
+        seen_urls.add(url)
+    return results
+
+
+def _collect_domain_mentions_via_search(
+    query: str,
+    domains: dict[str, str],
+    source_kind: str,
+    max_items: int,
+    source_profile: str,
+    region: str,
+) -> list[dict[str, Any]]:
+    if not domains or max_items <= 0:
+        return []
+
+    per_domain = max(2, max_items // max(1, len(domains)))
+    records: list[dict[str, Any]] = []
+    for platform, domain in domains.items():
+        search_results = _duckduckgo_search(
+            query=f"({query}) site:{domain}",
+            max_items=per_domain,
+            region=region,
+        )
+        for result in search_results:
+            records.append(
+                _build_record(
+                    source_kind=source_kind,
+                    source_profile=source_profile,
+                    platform=platform,
+                    title=result.get("title", ""),
+                    text=result.get("text", ""),
+                    url=result.get("url", ""),
+                    author="DuckDuckGo",
+                    published_at=datetime.now(timezone.utc),
+                )
+            )
+    return _dedupe(records)
+
+
+def _bing_news_feed(
+    query: str,
+    max_items: int,
+    source_profile: str,
+) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    encoded = quote_plus(query)
+    url = f"https://www.bing.com/news/search?q={encoded}&format=RSS"
+    feed = feedparser.parse(url)
+    records: list[dict[str, Any]] = []
+    for entry in feed.entries[:max_items]:
+        summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
+        records.append(
+            _build_record(
+                source_kind="news",
+                source_profile=source_profile,
+                platform=_first(entry, ["source"], "Bing News"),
+                title=entry.get("title", "").strip(),
+                text=re.sub(r"\s+", " ", summary).strip(),
+                url=entry.get("link", "").strip(),
+                author=_first(entry, ["author", "source"], "Bing News"),
+                published_at=entry.get("published") or entry.get("updated"),
+            )
+        )
+    return records
+
+
 def _run_apify_actor(actor_id: str, token: str, actor_input: dict[str, Any]) -> list[dict[str, Any]]:
     run_url = (
         f"https://api.apify.com/v2/acts/{actor_id}/runs"
         f"?token={token}&waitForFinish=45"
     )
     try:
-        run_response = requests.post(run_url, json=actor_input, timeout=60)
+        run_response = requests.post(run_url, json=actor_input, timeout=60, headers=REQUEST_HEADERS)
         run_response.raise_for_status()
         run_json = run_response.json().get("data", {})
         dataset_id = run_json.get("defaultDatasetId")
@@ -343,7 +471,7 @@ def _run_apify_actor(actor_id: str, token: str, actor_input: dict[str, Any]) -> 
             f"https://api.apify.com/v2/datasets/{dataset_id}/items"
             f"?token={token}&clean=true&format=json"
         )
-        data_response = requests.get(data_url, timeout=60)
+        data_response = requests.get(data_url, timeout=60, headers=REQUEST_HEADERS)
         data_response.raise_for_status()
         items = data_response.json()
         return items if isinstance(items, list) else []
@@ -356,10 +484,11 @@ def _fetch_apify_platform(
     query: str,
     max_items: int,
     source_profile: str = "cn",
+    auth_config: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    token = os.getenv("APIFY_TOKEN", "").strip()
+    token = _resolve_secret("APIFY_TOKEN", auth_config)
     actor_env = APIFY_ACTOR_ENV.get(platform)
-    actor_id = os.getenv(actor_env, "").strip() if actor_env else ""
+    actor_id = _resolve_secret(actor_env, auth_config) if actor_env else ""
     if not token or not actor_id:
         return []
 
@@ -426,6 +555,7 @@ def _collect_profile_news(
 ) -> list[dict[str, Any]]:
     config = _get_profile_config(source_profile)
     locale = config["news_locale"]
+    region = config.get("ddg_region", "")
     domain_limit = max(5, max_items // 6)
     query_candidates = [query] + [
         text for text in config["fallback_news_queries"] if text.strip().lower() != query.strip().lower()
@@ -456,6 +586,18 @@ def _collect_profile_news(
                 source_profile=source_profile,
             )
         )
+
+    records.extend(_bing_news_feed(query=query, max_items=max(6, max_items // 2), source_profile=source_profile))
+    records.extend(
+        _collect_domain_mentions_via_search(
+            query=query,
+            domains=config["news_domains"],
+            source_kind="news",
+            max_items=max_items,
+            source_profile=source_profile,
+            region=region,
+        )
+    )
 
     # If localized feed returns nothing, retry with locale-agnostic URL.
     if not records:
@@ -572,10 +714,12 @@ def collect_feedback(
     include_news: bool = True,
     include_social: bool = True,
     source_profile: str = "cn",
+    auth_config: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     config = _get_profile_config(source_profile)
     locale = config["news_locale"]
+    region = config.get("ddg_region", "")
     social_domains = config["social_domains"]
 
     if include_news:
@@ -601,8 +745,19 @@ def collect_feedback(
                         query=query,
                         max_items=max_items_per_source,
                         source_profile=source_profile,
+                        auth_config=auth_config,
                     )
                 )
+        records.extend(
+            _collect_domain_mentions_via_search(
+                query=query,
+                domains=social_domains,
+                source_kind="social",
+                max_items=max_items_per_source,
+                source_profile=source_profile,
+                region=region,
+            )
+        )
 
     return _dedupe(records)
 
@@ -670,9 +825,12 @@ def load_history(days_back: int = 30) -> list[dict[str, Any]]:
     return _dedupe(records)
 
 
-def connector_status(source_profile: str = "cn") -> list[dict[str, str]]:
+def connector_status(
+    source_profile: str = "cn",
+    auth_config: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
     config = _get_profile_config(source_profile)
-    token_exists = bool(os.getenv("APIFY_TOKEN", "").strip())
+    token_exists = bool(_resolve_secret("APIFY_TOKEN", auth_config))
     statuses: list[dict[str, str]] = [
         {
             "connector": "Source profile",
@@ -685,7 +843,19 @@ def connector_status(source_profile: str = "cn") -> list[dict[str, str]]:
             "type": "News + Mention Discovery",
             "status": "active",
             "detail": "No key required.",
-        }
+        },
+        {
+            "connector": "Bing News RSS",
+            "type": "News fallback",
+            "status": "active",
+            "detail": "No key required.",
+        },
+        {
+            "connector": "DuckDuckGo HTML",
+            "type": "Direct web scraping",
+            "status": "active",
+            "detail": "No key required.",
+        },
     ]
 
     for outlet, domain in config["news_domains"].items():
@@ -712,7 +882,7 @@ def connector_status(source_profile: str = "cn") -> list[dict[str, str]]:
         return statuses
 
     for platform, env_name in APIFY_ACTOR_ENV.items():
-        actor_id = os.getenv(env_name, "").strip()
+        actor_id = _resolve_secret(env_name, auth_config)
         configured = token_exists and bool(actor_id) and platform in config["social_domains"]
         statuses.append(
             {

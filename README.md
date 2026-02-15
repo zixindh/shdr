@@ -7,6 +7,7 @@ A Streamlit dashboard to monitor how guests feel about their Shanghai Disney tri
 - Tracks mentions from:
   - **Chinese mode (default)**: Xiaohongshu, Douyin, Weibo, Bilibili + Chinese news outlets
   - **English mode (global sources)**: YouTube, X/Twitter, Reddit, Instagram + ABC/CNBC/Reuters/BBC/AP
+  - Built-in scraping first: DuckDuckGo HTML + RSS collectors (no API key required)
   - Social/domain discovery via Google News RSS + fallback retry logic
 - Scores each post/article as positive / neutral / negative (bilingual keyword model)
 - Stores records by day: `data/snapshots/YYYY-MM-DD.json`
@@ -31,6 +32,7 @@ streamlit run app.py
 ### AI summary
 
 - `GEMINI_API_KEY`
+- Or input Gemini key directly in the Streamlit sidebar (session-only)
 
 ### Direct social scraping (recommended for production)
 
@@ -40,6 +42,7 @@ streamlit run app.py
 - `APIFY_WEIBO_ACTOR_ID`
 
 If Apify is not configured, the app still runs using RSS-based social mention discovery + news ingestion.
+If Apify is configured (sidebar input or env), the app performs deeper direct social scraping in Chinese mode.
 
 ### Bilingual translation
 

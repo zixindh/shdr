@@ -81,9 +81,10 @@ st.markdown(
 )
 
 
-@st.cache_resource
-def init_gemini() -> genai.Client | None:
-    key = os.getenv("GEMINI_API_KEY", "").strip()
+def init_gemini(api_key_override: str = "") -> genai.Client | None:
+    key = (api_key_override or "").strip()
+    if not key:
+        key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
         try:
             key = st.secrets.get("GEMINI_API_KEY", "")
@@ -99,6 +100,7 @@ def refresh_and_store(
     include_news: bool,
     include_social: bool,
     source_profile: str,
+    auth_config: dict[str, str],
     nonce: int,
 ) -> list[dict]:
     records = collect_feedback(
@@ -107,6 +109,7 @@ def refresh_and_store(
         include_news=include_news,
         include_social=include_social,
         source_profile=source_profile,
+        auth_config=auth_config,
     )
     save_records_by_day(records)
     return records
@@ -207,6 +210,38 @@ include_news = st.sidebar.toggle(t("包含新闻", "Include news"), value=True)
 include_social = st.sidebar.toggle(t("包含社媒", "Include social"), value=True)
 show_translation = st.sidebar.toggle(t("显示翻译", "Show translation"), value=True)
 focus_hot_topic = st.sidebar.toggle(t("仅看当日热点", "Only hottest topic"), value=False)
+
+with st.sidebar.expander(t("API密钥（可选）", "API keys (optional)"), expanded=False):
+    st.caption(
+        t(
+            "仅在当前会话使用，刷新后可重新输入。",
+            "Keys are used only in this session; re-enter after restart.",
+        )
+    )
+    gemini_api_key_input = st.text_input(
+        t("Gemini API Key（用于AI摘要）", "Gemini API Key (for AI summary)"),
+        type="password",
+        value="",
+    ).strip()
+    apify_token_input = st.text_input(
+        t("Apify Token（用于深度社媒抓取）", "Apify Token (for deeper social scraping)"),
+        type="password",
+        value="",
+    ).strip()
+    apify_xhs_actor_input = st.text_input("APIFY_XHS_ACTOR_ID", value="").strip()
+    apify_douyin_actor_input = st.text_input("APIFY_DOUYIN_ACTOR_ID", value="").strip()
+    apify_weibo_actor_input = st.text_input("APIFY_WEIBO_ACTOR_ID", value="").strip()
+
+auth_config: dict[str, str] = {}
+if apify_token_input:
+    auth_config["APIFY_TOKEN"] = apify_token_input
+if apify_xhs_actor_input:
+    auth_config["APIFY_XHS_ACTOR_ID"] = apify_xhs_actor_input
+if apify_douyin_actor_input:
+    auth_config["APIFY_DOUYIN_ACTOR_ID"] = apify_douyin_actor_input
+if apify_weibo_actor_input:
+    auth_config["APIFY_WEIBO_ACTOR_ID"] = apify_weibo_actor_input
+
 force_refresh = st.sidebar.button(t("立即刷新", "Refresh now"), type="primary")
 
 previous_profile = st.session_state.get("active_source_profile")
@@ -243,13 +278,14 @@ if should_refresh_live:
             include_news=include_news,
             include_social=include_social,
             source_profile=source_profile,
+            auth_config=auth_config,
             nonce=st.session_state.refresh_nonce,
         )
     all_history = load_history(days_back=history_days)
 
 if not all_history:
     st.warning(t("暂无数据，请点击“立即刷新”或配置连接器。", "No data yet. Click Refresh now or configure connectors."))
-    status_df = pd.DataFrame(connector_status(source_profile=source_profile))
+    status_df = pd.DataFrame(connector_status(source_profile=source_profile, auth_config=auth_config))
     st.dataframe(status_df, use_container_width=True, hide_index=True)
     st.stop()
 
@@ -266,7 +302,11 @@ if df.empty:
             "No data for this language mode yet. Click Refresh now to pull matching sources.",
         )
     )
-    st.dataframe(pd.DataFrame(connector_status(source_profile=source_profile)), use_container_width=True, hide_index=True)
+    st.dataframe(
+        pd.DataFrame(connector_status(source_profile=source_profile, auth_config=auth_config)),
+        use_container_width=True,
+        hide_index=True,
+    )
     st.stop()
 
 df["published_dt"] = pd.to_datetime(df["published_at"], utc=True, errors="coerce").dt.tz_convert(CN_TZ)
@@ -464,7 +504,7 @@ with tab_daily:
     fig_hourly.update_layout(height=320, margin=dict(t=40, b=20, l=10, r=10))
     st.plotly_chart(fig_hourly, use_container_width=True)
 
-    client = init_gemini()
+    client = init_gemini(gemini_api_key_input)
     if client is not None:
         if st.button("Generate AI day summary | 生成AI日报", key="ai-summary"):
             with st.spinner("Generating summary... 正在生成..."):
@@ -483,7 +523,12 @@ with tab_daily:
                 )
                 st.markdown(response.text)
     else:
-        st.caption("Set GEMINI_API_KEY to enable AI day summaries. 配置后可生成AI双语日报。")
+        st.caption(
+            t(
+                "可在侧边栏输入 Gemini API Key 或配置 GEMINI_API_KEY。",
+                "Enter Gemini API key in sidebar or configure GEMINI_API_KEY.",
+            )
+        )
 
     preview_df = display_day_df[
         ["published_dt", "platform", "source_kind", "sentiment_label", "sentiment_score", "title", "url"]
@@ -524,9 +569,10 @@ with tab_pipeline:
         st.markdown(
             """
             - **中文模式默认**：优先抓取小红书/抖音/微博/B站信号，并聚合中文新闻源。
+            - **自主抓取优先**：内置 DuckDuckGo HTML + RSS，不依赖第三方API也能跑。
             - **新闻兜底**：主查询 + 多新闻站点 `site:` 检索 + 无地区参数回退。
             - **每日组织**：写入 `data/snapshots/YYYY-MM-DD.json`。
-            - **双语展示**：保留原文，再附翻译，避免信息损失。
+            - **可选密钥增强**：可输入 Apify Token + Actor ID 获取更深层社媒抓取。
             """
         )
     else:
@@ -534,11 +580,16 @@ with tab_pipeline:
             """
             - **English mode = global sources**: YouTube, X/Twitter, Reddit, Instagram.
             - **Global news outlets**: ABC, CNBC, Reuters, BBC, AP via RSS discovery.
+            - **Own scraping first**: DuckDuckGo HTML + RSS collectors run without API keys.
             - **Fallback news path**: primary query + outlet `site:` query + locale-agnostic retry.
             - **Daily organization**: persisted in `data/snapshots/YYYY-MM-DD.json`.
             """
         )
-    st.dataframe(pd.DataFrame(connector_status(source_profile=source_profile)), use_container_width=True, hide_index=True)
+    st.dataframe(
+        pd.DataFrame(connector_status(source_profile=source_profile, auth_config=auth_config)),
+        use_container_width=True,
+        hide_index=True,
+    )
     st.caption(
         "For production: run collectors with a scheduler and keep platform ToS/rate-limit compliance checks enabled."
         " 生产建议：使用定时任务并遵守平台条款和频率限制。"
