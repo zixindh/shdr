@@ -8,13 +8,15 @@ A Streamlit dashboard to monitor how guests feel about their Shanghai Disney tri
   - **Chinese mode (default)**: Xiaohongshu, Douyin, Weibo, Bilibili + broad Shanghai local media
     - Shanghai Observer, Jiefang Daily, Wenhui, Xinmin Evening News, Eastday, Kankanews, Shanghai Daily, Shanghai Gov, and more
   - **English mode (global sources)**: YouTube, X/Twitter, Reddit, Instagram + ABC/CNBC/Reuters/BBC/AP
-  - Built-in scraping first: DuckDuckGo HTML + RSS collectors (no API key required)
+  - Built-in scraping first: DuckDuckGo HTML + RSS collectors + GDELT + Reddit JSON + YouTube RSS (no API key required)
   - Social/domain discovery via Google News RSS + fallback retry logic
-- Scores each post/article as positive / neutral / negative (bilingual keyword model)
+- Scores each post/article as positive / neutral / negative (CN+EN keyword model)
 - Stores records by day: `data/snapshots/YYYY-MM-DD.json`
 - Highlights **one hottest topic per day** (topic hit count + coverage) to reduce information overload
 - Adds a **Media Intelligence cockpit** (risk radar, top outlets, local outlet coverage, recommended actions)
-- Keeps each item in **original language + translated version** for bilingual browsing
+- Single-language display mode:
+  - Choose **中文** or **English**
+  - UI and content are rendered in the selected language
 - Supports update modes:
   - Near real-time (5-minute auto-refresh)
   - Daily snapshot (24-hour refresh)
@@ -46,10 +48,10 @@ streamlit run app.py
 If Apify is not configured, the app still runs using RSS-based social mention discovery + news ingestion.
 If Apify is configured (sidebar input or env), the app performs deeper direct social scraping in Chinese mode.
 
-### Bilingual translation
+### Single-language display translation
 
-- Uses `deep-translator` (GoogleTranslator backend) for automatic cross-language display.
-- If translation is unavailable, the original text is still shown with a fallback message.
+- Uses `deep-translator` (GoogleTranslator backend) only when source content is in a different language than current display mode.
+- If translation is unavailable, the original text is shown.
 
 ## Production ingestion pattern (recommended)
 
@@ -65,9 +67,13 @@ If Apify is configured (sidebar input or env), the app performs deeper direct so
   - Optional session-only API key inputs (Gemini / Apify)
 - `feedback_engine.py`
   - Source profiles (`cn` / `global`) and outlet/domain configuration
-  - Collection pipeline (RSS + search scraping + optional Apify)
+  - Collection pipeline (RSS + search scraping + GDELT + optional Apify + global social open endpoints)
   - Daily topic extraction and media-risk summarization (`compute_media_brief`)
   - Snapshot persistence and connector status reporting
+
+## Open-source connector research
+
+See `OPEN_SOURCE_CONNECTOR_RESEARCH.md` for GitHub research and integration decisions.
 
 ## Notes
 

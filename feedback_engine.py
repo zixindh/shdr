@@ -36,6 +36,9 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "Douyin": "douyin.com",
             "Weibo": "weibo.com",
             "Bilibili": "bilibili.com",
+            "Zhihu": "zhihu.com",
+            "Toutiao": "toutiao.com",
+            "Tieba": "tieba.baidu.com",
         },
         "news_domains": {
             "Shanghai Observer": "shobserver.com",
@@ -66,7 +69,7 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "上海迪士尼 排队",
             "上海迪士尼 服务",
         ],
-        "news_domain_scan_limit": 14,
+        "news_domain_scan_limit": 20,
         "local_outlet_names": [
             "Shanghai Observer",
             "Jiefang Daily",
@@ -90,6 +93,9 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "Twitter": "twitter.com",
             "Reddit": "reddit.com",
             "Instagram": "instagram.com",
+            "TikTok": "tiktok.com",
+            "Facebook": "facebook.com",
+            "Threads": "threads.net",
         },
         "news_domains": {
             "ABC": "abcnews.go.com",
@@ -103,7 +109,7 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "Shanghai Disneyland",
             "Shanghai Disney Resort news",
         ],
-        "news_domain_scan_limit": 8,
+        "news_domain_scan_limit": 10,
         "ddg_region": "us-en",
     },
 }
@@ -494,6 +500,132 @@ def _bing_news_feed(
     return records
 
 
+def _gdelt_news_feed(
+    query: str,
+    max_items: int,
+    source_profile: str,
+) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    params = {
+        "query": query,
+        "mode": "ArtList",
+        "maxrecords": str(min(250, max_items)),
+        "format": "json",
+        "sort": "HybridRel",
+    }
+    try:
+        response = requests.get(
+            "https://api.gdeltproject.org/api/v2/doc/doc",
+            params=params,
+            timeout=40,
+            headers=REQUEST_HEADERS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return []
+
+    articles = payload.get("articles", []) if isinstance(payload, dict) else []
+    records: list[dict[str, Any]] = []
+    for article in articles[:max_items]:
+        if not isinstance(article, dict):
+            continue
+        domain = (article.get("domain") or "").strip()
+        platform = domain if domain else "GDELT"
+        records.append(
+            _build_record(
+                source_kind="news",
+                source_profile=source_profile,
+                platform=platform,
+                title=(article.get("title") or "").strip(),
+                text=(article.get("seendate") or "").strip(),
+                url=(article.get("url") or "").strip(),
+                author=(article.get("sourcecountry") or "GDELT").strip(),
+                published_at=article.get("seendate") or article.get("socialimage") or datetime.now(timezone.utc),
+            )
+        )
+    return records
+
+
+def _youtube_search_feed(
+    query: str,
+    max_items: int,
+    source_profile: str,
+) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    encoded = quote_plus(query)
+    feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?search_query={encoded}")
+    records: list[dict[str, Any]] = []
+    for entry in feed.entries[:max_items]:
+        summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
+        records.append(
+            _build_record(
+                source_kind="social",
+                source_profile=source_profile,
+                platform="YouTube",
+                title=entry.get("title", "").strip(),
+                text=re.sub(r"\s+", " ", summary).strip(),
+                url=entry.get("link", "").strip(),
+                author=_first(entry, ["author", "yt_author"], "YouTube"),
+                published_at=entry.get("published") or entry.get("updated"),
+            )
+        )
+    return records
+
+
+def _reddit_search_feed(
+    query: str,
+    max_items: int,
+    source_profile: str,
+) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    params = {
+        "q": query,
+        "sort": "new",
+        "t": "week",
+        "limit": str(min(100, max_items)),
+    }
+    try:
+        response = requests.get(
+            "https://www.reddit.com/search.json",
+            params=params,
+            timeout=30,
+            headers=REQUEST_HEADERS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return []
+
+    children = (
+        payload.get("data", {}).get("children", [])
+        if isinstance(payload, dict)
+        else []
+    )
+    records: list[dict[str, Any]] = []
+    for child in children[:max_items]:
+        item = child.get("data", {}) if isinstance(child, dict) else {}
+        permalink = (item.get("permalink") or "").strip()
+        url = f"https://www.reddit.com{permalink}" if permalink else (item.get("url") or "").strip()
+        subreddit = (item.get("subreddit_name_prefixed") or "Reddit").strip()
+        records.append(
+            _build_record(
+                source_kind="social",
+                source_profile=source_profile,
+                platform="Reddit",
+                title=(item.get("title") or "").strip(),
+                text=(item.get("selftext") or "").strip(),
+                url=url,
+                author=subreddit,
+                published_at=item.get("created_utc"),
+            )
+        )
+    return records
+
+
 def _run_apify_actor(actor_id: str, token: str, actor_input: dict[str, Any]) -> list[dict[str, Any]]:
     run_url = (
         f"https://api.apify.com/v2/acts/{actor_id}/runs"
@@ -631,6 +763,7 @@ def _collect_profile_news(
         )
 
     records.extend(_bing_news_feed(query=query, max_items=max(6, max_items // 2), source_profile=source_profile))
+    records.extend(_gdelt_news_feed(query=query, max_items=max(20, max_items), source_profile=source_profile))
     records.extend(
         _collect_domain_mentions_via_search(
             query=query,
@@ -809,28 +942,73 @@ def compute_media_brief(records: list[dict[str, Any]], source_profile: str = "cn
     local_coverage = 0.0 if not local_outlets else len(local_hits) / len(local_outlets)
 
     actions: list[str] = []
+    is_cn = source_profile == "cn"
+
+    def action_text(cn: str, en: str) -> str:
+        return cn if is_cn else en
+
     top_risks = risk_rows[:3]
     for risk in top_risks:
         key = risk["risk_key"]
         if key == "queue_pressure":
-            actions.append("Queue pressure is high: push wait-time transparency and crowd dispersal messaging.")
+            actions.append(
+                action_text(
+                    "排队压力较高：建议加强等候时长透明发布与分流引导话术。",
+                    "Queue pressure is high: push wait-time transparency and crowd dispersal messaging.",
+                )
+            )
         elif key == "ride_reliability":
-            actions.append("Ride reliability issue: publish maintenance status updates and recovery timelines quickly.")
+            actions.append(
+                action_text(
+                    "设备稳定性风险：快速发布检修状态和恢复时间预估。",
+                    "Ride reliability issue: publish maintenance status updates and recovery timelines quickly.",
+                )
+            )
         elif key == "service_quality":
-            actions.append("Service quality concern: acknowledge complaints and issue frontline service improvement brief.")
+            actions.append(
+                action_text(
+                    "服务体验风险：先回应投诉，再同步一线服务改进说明。",
+                    "Service quality concern: acknowledge complaints and issue frontline service improvement brief.",
+                )
+            )
         elif key == "pricing_value":
-            actions.append("Pricing sentiment is weak: reinforce bundled value messaging and guest-benefit examples.")
+            actions.append(
+                action_text(
+                    "价格感知偏弱：强化套餐价值表达并给出游客受益示例。",
+                    "Pricing sentiment is weak: reinforce bundled value messaging and guest-benefit examples.",
+                )
+            )
         elif key == "food_safety_cleanliness":
-            actions.append("Food/cleanliness risk detected: release hygiene assurance statement and corrective actions.")
+            actions.append(
+                action_text(
+                    "餐饮/卫生风险出现：建议发布卫生保障说明和整改动作。",
+                    "Food/cleanliness risk detected: release hygiene assurance statement and corrective actions.",
+                )
+            )
         elif key == "transport_entry":
-            actions.append("Entry/transport friction: provide arrival guidance and entry time-window recommendations.")
+            actions.append(
+                action_text(
+                    "入园与交通摩擦上升：补充到达指引和分时入园建议。",
+                    "Entry/transport friction: provide arrival guidance and entry time-window recommendations.",
+                )
+            )
         elif key == "weather_ops":
-            actions.append("Weather disruption risk: post proactive operation alternatives and compensation policies.")
+            actions.append(
+                action_text(
+                    "天气扰动风险：提前发布替代方案与补偿政策说明。",
+                    "Weather disruption risk: post proactive operation alternatives and compensation policies.",
+                )
+            )
 
     if source_profile == "cn" and local_coverage < 0.4:
-        actions.append("Shanghai local media coverage is thin: proactively brief local editors with verified updates.")
+        actions.append("上海本地媒体覆盖偏薄：建议主动向本地编辑推送核实后的更新。")
     if not actions:
-        actions.append("Narrative is stable: keep proactive updates and amplify positive guest stories.")
+        actions.append(
+            action_text(
+                "舆情整体稳定：保持主动更新并放大正向游客故事。",
+                "Narrative is stable: keep proactive updates and amplify positive guest stories.",
+            )
+        )
 
     return {
         "total_mentions": len(records),
@@ -885,6 +1063,9 @@ def collect_feedback(
                         auth_config=auth_config,
                     )
                 )
+        if source_profile == "global":
+            records.extend(_reddit_search_feed(query=query, max_items=max_items_per_source, source_profile=source_profile))
+            records.extend(_youtube_search_feed(query=query, max_items=max_items_per_source, source_profile=source_profile))
         records.extend(
             _collect_domain_mentions_via_search(
                 query=query,
@@ -990,6 +1171,12 @@ def connector_status(
             "detail": "No key required.",
         },
         {
+            "connector": "GDELT Doc API",
+            "type": "Open news API",
+            "status": "active",
+            "detail": "No key required.",
+        },
+        {
             "connector": "DuckDuckGo HTML",
             "type": "Direct web scraping",
             "status": "active",
@@ -1014,6 +1201,24 @@ def connector_status(
                 "type": "Social discovery",
                 "status": "active",
                 "detail": f"site:{domain}",
+            }
+        )
+
+    if source_profile == "global":
+        statuses.append(
+            {
+                "connector": "Reddit JSON Search",
+                "type": "Open social API",
+                "status": "active",
+                "detail": "No key required.",
+            }
+        )
+        statuses.append(
+            {
+                "connector": "YouTube Search RSS",
+                "type": "Open social feed",
+                "status": "active",
+                "detail": "No key required.",
             }
         )
 
