@@ -17,6 +17,7 @@ from feedback_engine import (
     DEFAULT_QUERY_GLOBAL,
     collect_feedback,
     compute_daily_hot_topics,
+    compute_pr_brief,
     connector_status,
     detect_language,
     load_history,
@@ -369,11 +370,14 @@ if include_news and profile_news_mentions == 0:
         )
     )
 
+pr_brief = compute_pr_brief(display_day_df.to_dict("records"), source_profile=source_profile)
+
 st.markdown(
     f"""
     <div class="glass">
         <span class="topic-chip">{escape(t("每日热点", "Hot topic"))}: {escape(selected_hot_topic or "overall_sentiment")}</span>
         <span style="color:#94a3b8;">{escape(selected_hot_topic_translation) if selected_hot_topic_translation else ""}</span>
+        {f'<span class="tag">{escape(t("本地媒体覆盖", "Local media coverage"))}: {pr_brief.get("local_outlet_coverage", 0)*100:.0f}%</span>' if source_profile == "cn" else ''}
     </div>
     """,
     unsafe_allow_html=True,
@@ -401,8 +405,9 @@ with k4:
         unsafe_allow_html=True,
     )
 
-tab_hot, tab_pulse, tab_daily, tab_feed, tab_pipeline = st.tabs(
+tab_pr, tab_hot, tab_pulse, tab_daily, tab_feed, tab_pipeline = st.tabs(
     [
+        "PR Command / 公关指挥台",
         "Hot Topics / 每日热点",
         "Pulse Board / 总览",
         "Daily Navigator / 日维度",
@@ -410,6 +415,43 @@ tab_hot, tab_pulse, tab_daily, tab_feed, tab_pipeline = st.tabs(
         "Pipeline / 数据管道",
     ]
 )
+
+with tab_pr:
+    st.markdown("#### PR command center | 公关指挥中心")
+    c1, c2, c3 = st.columns(3)
+    coverage_label = (
+        t("本地媒体覆盖率", "Local outlet coverage")
+        if source_profile == "cn"
+        else t("核心媒体覆盖率", "Core outlet coverage")
+    )
+    with c1:
+        st.markdown(
+            f'<div class="glass"><div class="kpi">{pr_brief.get("news_mentions", 0)}</div><div class="kpi-label">{t("新闻提及", "News mentions")}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f'<div class="glass"><div class="kpi">{pr_brief.get("negative_mentions", 0)}</div><div class="kpi-label">{t("负向总量", "Negative mentions")}</div></div>',
+            unsafe_allow_html=True,
+        )
+    with c3:
+        coverage_pct = int(float(pr_brief.get("local_outlet_coverage", 0)) * 100)
+        st.markdown(
+            f'<div class="glass"><div class="kpi">{coverage_pct}%</div><div class="kpi-label">{coverage_label}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    top_outlets = pd.DataFrame(pr_brief.get("top_outlets", []))
+    risk_table = pd.DataFrame(pr_brief.get("risk_table", []))
+    if not top_outlets.empty:
+        st.markdown(f"##### {t('主流媒体声量', 'Top outlet volume')}")
+        st.dataframe(top_outlets.head(12), use_container_width=True, hide_index=True)
+    if not risk_table.empty:
+        st.markdown(f"##### {t('风险雷达', 'Risk radar')}")
+        st.dataframe(risk_table.head(8), use_container_width=True, hide_index=True)
+    st.markdown(f"##### {t('建议动作', 'Recommended actions')}")
+    for action in pr_brief.get("actions", []):
+        st.markdown(f"- {action}")
 
 with tab_hot:
     st.markdown("#### Daily hot-topic digest | 每日热点摘要")
@@ -569,6 +611,7 @@ with tab_pipeline:
         st.markdown(
             """
             - **中文模式默认**：优先抓取小红书/抖音/微博/B站信号，并聚合中文新闻源。
+            - **上海本地媒体池**：上观、解放日报、文汇、新民、东方网、看看新闻、Shanghai Daily、市政府等。
             - **自主抓取优先**：内置 DuckDuckGo HTML + RSS，不依赖第三方API也能跑。
             - **新闻兜底**：主查询 + 多新闻站点 `site:` 检索 + 无地区参数回退。
             - **每日组织**：写入 `data/snapshots/YYYY-MM-DD.json`。

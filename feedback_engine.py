@@ -39,16 +39,46 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "Bilibili": "bilibili.com",
         },
         "news_domains": {
+            "Shanghai Observer": "shobserver.com",
+            "Jiefang Daily": "jfdaily.com",
+            "Wenhui": "whb.cn",
+            "Xinmin Evening News": "xinmin.cn",
+            "Eastday": "eastday.com",
+            "Kankanews": "kankanews.com",
+            "Shanghai Daily": "shine.cn",
+            "People Shanghai": "sh.people.com.cn",
+            "Shanghai Government": "shanghai.gov.cn",
+            "SMG": "smg.cn",
             "Xinhua": "news.cn",
             "The Paper": "thepaper.cn",
             "Sina": "sina.com.cn",
             "NBD": "nbd.com.cn",
             "Jiemian": "jiemian.com",
+            "Yicai": "yicai.com",
+            "Sohu": "sohu.com",
+            "163 News": "163.com",
+            "Tencent News": "qq.com",
+            "China Daily": "chinadaily.com.cn",
         },
         "fallback_news_queries": [
             "上海迪士尼",
             "上海迪士尼 游客",
             "上海迪士尼 乐园 新闻",
+            "上海迪士尼 排队",
+            "上海迪士尼 服务",
+        ],
+        "news_domain_scan_limit": 14,
+        "local_outlet_names": [
+            "Shanghai Observer",
+            "Jiefang Daily",
+            "Wenhui",
+            "Xinmin Evening News",
+            "Eastday",
+            "Kankanews",
+            "Shanghai Daily",
+            "People Shanghai",
+            "Shanghai Government",
+            "SMG",
         ],
         "ddg_region": "cn-zh",
     },
@@ -74,6 +104,7 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "Shanghai Disneyland",
             "Shanghai Disney Resort news",
         ],
+        "news_domain_scan_limit": 8,
         "ddg_region": "us-en",
     },
 }
@@ -195,6 +226,16 @@ HOT_TOPIC_WEB_NOISE = {
     "quot",
     "lt",
     "gt",
+}
+
+PR_RISK_KEYWORDS: dict[str, list[str]] = {
+    "queue_pressure": ["排队", "排队时间", "拥挤", "人多", "堵", "等待", "queue", "crowd", "wait time", "long line"],
+    "service_quality": ["服务", "态度", "体验差", "投诉", "维权", "差评", "service", "staff", "complaint", "rude"],
+    "ride_reliability": ["故障", "停运", "检修", "卡住", "事故", "延误", "breakdown", "closed", "maintenance", "delay"],
+    "pricing_value": ["贵", "太贵", "涨价", "价格", "性价比", "不值", "expensive", "price", "overpriced", "value"],
+    "food_safety_cleanliness": ["食品", "卫生", "脏", "异物", "肠胃", "不干净", "food", "hygiene", "dirty", "cleanliness"],
+    "transport_entry": ["交通", "地铁", "打车", "入园", "安检", "排队入场", "traffic", "metro", "taxi", "entry", "security check"],
+    "weather_ops": ["下雨", "高温", "台风", "雷暴", "天气", "演出取消", "rain", "heat", "storm", "weather", "show cancelled"],
 }
 
 
@@ -556,7 +597,10 @@ def _collect_profile_news(
     config = _get_profile_config(source_profile)
     locale = config["news_locale"]
     region = config.get("ddg_region", "")
-    domain_limit = max(5, max_items // 6)
+    all_domains = list(config["news_domains"].items())
+    scan_limit = min(len(all_domains), int(config.get("news_domain_scan_limit", len(all_domains))))
+    selected_domains = all_domains[:scan_limit]
+    domain_limit = max(3, max_items // max(3, scan_limit))
     query_candidates = [query] + [
         text for text in config["fallback_news_queries"] if text.strip().lower() != query.strip().lower()
     ]
@@ -575,7 +619,7 @@ def _collect_profile_news(
             )
         )
 
-    for outlet, domain in config["news_domains"].items():
+    for outlet, domain in selected_domains:
         records.extend(
             _google_news_feed(
                 query=f"({query}) site:{domain}",
@@ -591,7 +635,7 @@ def _collect_profile_news(
     records.extend(
         _collect_domain_mentions_via_search(
             query=query,
-            domains=config["news_domains"],
+            domains=dict(selected_domains),
             source_kind="news",
             max_items=max_items,
             source_profile=source_profile,
@@ -706,6 +750,100 @@ def compute_daily_hot_topics(records: list[dict[str, Any]]) -> list[dict[str, An
         )
 
     return sorted(daily_topics, key=lambda item: item["published_day"], reverse=True)
+
+
+def _record_body(record: dict[str, Any]) -> str:
+    return f"{record.get('title', '')} {record.get('text', '')}".lower()
+
+
+def compute_pr_brief(records: list[dict[str, Any]], source_profile: str = "cn") -> dict[str, Any]:
+    config = _get_profile_config(source_profile)
+    news_records = [item for item in records if item.get("source_kind") == "news"]
+    social_records = [item for item in records if item.get("source_kind") == "social"]
+    negative_records = [item for item in records if item.get("sentiment_label") == "negative"]
+
+    risk_rows: list[dict[str, Any]] = []
+    for risk_key, terms in PR_RISK_KEYWORDS.items():
+        hits = 0
+        negative_hits = 0
+        for item in records:
+            body = _record_body(item)
+            if any(term.lower() in body for term in terms):
+                hits += 1
+                if item.get("sentiment_label") == "negative":
+                    negative_hits += 1
+        if hits == 0:
+            continue
+        neg_ratio = negative_hits / hits
+        risk_rows.append(
+            {
+                "risk_key": risk_key,
+                "mentions": hits,
+                "negative_mentions": negative_hits,
+                "negative_ratio": round(neg_ratio, 3),
+                "risk_score": round(hits * (1 + neg_ratio), 2),
+            }
+        )
+    risk_rows.sort(key=lambda item: (item["risk_score"], item["mentions"]), reverse=True)
+
+    outlet_counter: Counter[str] = Counter()
+    outlet_sentiment: dict[str, list[float]] = {}
+    for item in news_records:
+        outlet = item.get("platform", "Unknown")
+        outlet_counter[outlet] += 1
+        outlet_sentiment.setdefault(outlet, []).append(float(item.get("sentiment_score", 0)))
+
+    top_outlets: list[dict[str, Any]] = []
+    for outlet, mentions in outlet_counter.most_common(12):
+        scores = outlet_sentiment.get(outlet, [0.0])
+        top_outlets.append(
+            {
+                "outlet": outlet,
+                "mentions": mentions,
+                "avg_sentiment": round(sum(scores) / max(1, len(scores)), 3),
+            }
+        )
+
+    local_outlet_seed = config.get("local_outlet_names") or list(config.get("news_domains", {}).keys())[:6]
+    local_outlets = set(local_outlet_seed)
+    local_hits = sorted(outlet for outlet in outlet_counter if outlet in local_outlets)
+    local_coverage = 0.0 if not local_outlets else len(local_hits) / len(local_outlets)
+
+    actions: list[str] = []
+    top_risks = risk_rows[:3]
+    for risk in top_risks:
+        key = risk["risk_key"]
+        if key == "queue_pressure":
+            actions.append("Queue pressure is high: push wait-time transparency and crowd dispersal messaging.")
+        elif key == "ride_reliability":
+            actions.append("Ride reliability issue: publish maintenance status updates and recovery timelines quickly.")
+        elif key == "service_quality":
+            actions.append("Service quality concern: acknowledge complaints and issue frontline service improvement brief.")
+        elif key == "pricing_value":
+            actions.append("Pricing sentiment is weak: reinforce bundled value messaging and guest-benefit examples.")
+        elif key == "food_safety_cleanliness":
+            actions.append("Food/cleanliness risk detected: release hygiene assurance statement and corrective actions.")
+        elif key == "transport_entry":
+            actions.append("Entry/transport friction: provide arrival guidance and entry time-window recommendations.")
+        elif key == "weather_ops":
+            actions.append("Weather disruption risk: post proactive operation alternatives and compensation policies.")
+
+    if source_profile == "cn" and local_coverage < 0.4:
+        actions.append("Shanghai local media coverage is thin: proactively brief local editors with verified updates.")
+    if not actions:
+        actions.append("Narrative is stable: keep proactive updates and amplify positive guest stories.")
+
+    return {
+        "total_mentions": len(records),
+        "news_mentions": len(news_records),
+        "social_mentions": len(social_records),
+        "negative_mentions": len(negative_records),
+        "local_outlet_coverage": round(local_coverage, 3),
+        "local_outlets_hit": local_hits,
+        "risk_table": risk_rows,
+        "top_outlets": top_outlets,
+        "actions": actions[:5],
+    }
 
 
 def collect_feedback(
@@ -831,12 +969,14 @@ def connector_status(
 ) -> list[dict[str, str]]:
     config = _get_profile_config(source_profile)
     token_exists = bool(_resolve_secret("APIFY_TOKEN", auth_config))
+    all_domains = list(config["news_domains"].items())
+    scan_limit = min(len(all_domains), int(config.get("news_domain_scan_limit", len(all_domains))))
     statuses: list[dict[str, str]] = [
         {
             "connector": "Source profile",
             "type": "Routing mode",
             "status": source_profile,
-            "detail": config["display_name"],
+            "detail": f"{config['display_name']} | scanning {scan_limit}/{len(all_domains)} news outlets per refresh",
         },
         {
             "connector": "Google News RSS",
@@ -858,12 +998,12 @@ def connector_status(
         },
     ]
 
-    for outlet, domain in config["news_domains"].items():
+    for outlet, domain in all_domains:
         statuses.append(
             {
                 "connector": outlet,
                 "type": "News outlet",
-                "status": "active",
+                "status": "active" if outlet in dict(all_domains[:scan_limit]) else "standby",
                 "detail": f"site:{domain}",
             }
         )

@@ -5,13 +5,15 @@ A Streamlit dashboard to monitor how guests feel about their Shanghai Disney tri
 ## What it does
 
 - Tracks mentions from:
-  - **Chinese mode (default)**: Xiaohongshu, Douyin, Weibo, Bilibili + Chinese news outlets
+  - **Chinese mode (default)**: Xiaohongshu, Douyin, Weibo, Bilibili + broad Shanghai local media
+    - Shanghai Observer, Jiefang Daily, Wenhui, Xinmin Evening News, Eastday, Kankanews, Shanghai Daily, Shanghai Gov, and more
   - **English mode (global sources)**: YouTube, X/Twitter, Reddit, Instagram + ABC/CNBC/Reuters/BBC/AP
   - Built-in scraping first: DuckDuckGo HTML + RSS collectors (no API key required)
   - Social/domain discovery via Google News RSS + fallback retry logic
 - Scores each post/article as positive / neutral / negative (bilingual keyword model)
 - Stores records by day: `data/snapshots/YYYY-MM-DD.json`
 - Highlights **one hottest topic per day** (topic hit count + coverage) to reduce information overload
+- Adds a **PR Command Center** (risk radar, top outlets, local outlet coverage, recommended actions)
 - Keeps each item in **original language + translated version** for bilingual browsing
 - Supports update modes:
   - Near real-time (5-minute auto-refresh)
