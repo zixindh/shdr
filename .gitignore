@@ -8,7 +8,9 @@ __pycache__/
 *.pyd
 
 # Streamlit cache
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
+.streamlit/secrets.toml
 
 # Runtime snapshot data
 data/snapshots/

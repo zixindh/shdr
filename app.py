@@ -192,8 +192,8 @@ st.sidebar.title(t("控制台", "Control Center"))
 st.markdown(f"## {t('上海迪士尼游客反馈引擎', 'Shanghai Disney Guest Pulse Engine')}")
 st.caption(
     t(
-        "按天追踪游客反馈，自动提炼每日热点，并统一显示为中文。",
-        "Track daily guest sentiment, surface one hot topic per day, and display all content in English.",
+        "按天追踪游客反馈，默认用 Gemini + Google Search 同时抓取中英文新闻。",
+        "Track daily guest sentiment with Gemini + Google Search as the bilingual (EN+ZH) primary news source.",
     )
 )
 
@@ -221,7 +221,10 @@ max_items = st.sidebar.slider(t("每源抓取上限", "Max items per source"), 2
 history_days = st.sidebar.slider(t("历史天数", "History window (days)"), 7, 90, 30, step=1)
 feed_limit = st.sidebar.slider(t("信息流条数", "Feed items shown"), 20, 200, 80, step=10)
 include_news = st.sidebar.toggle(t("包含新闻", "Include news"), value=True)
-include_social = st.sidebar.toggle(t("包含社媒", "Include social"), value=True)
+include_social = st.sidebar.toggle(
+    t("包含社媒（轻量）", "Include social (lightweight)"),
+    value=False,
+)
 focus_hot_topic = st.sidebar.toggle(t("仅看当日热点", "Only hottest topic"), value=False)
 
 with st.sidebar.expander(t("API密钥（可选）", "API keys (optional)"), expanded=False):
@@ -232,28 +235,17 @@ with st.sidebar.expander(t("API密钥（可选）", "API keys (optional)"), expa
         )
     )
     gemini_api_key_input = st.text_input(
-        t("Gemini API Key（用于AI摘要）", "Gemini API Key (for AI summary)"),
+        t(
+            "Gemini API Key（用于新闻抓取 + AI摘要）",
+            "Gemini API Key (for grounded news + AI summary)",
+        ),
         type="password",
         value="",
     ).strip()
-    apify_token_input = st.text_input(
-        t("Apify Token（用于深度社媒抓取）", "Apify Token (for deeper social scraping)"),
-        type="password",
-        value="",
-    ).strip()
-    apify_xhs_actor_input = st.text_input("APIFY_XHS_ACTOR_ID", value="").strip()
-    apify_douyin_actor_input = st.text_input("APIFY_DOUYIN_ACTOR_ID", value="").strip()
-    apify_weibo_actor_input = st.text_input("APIFY_WEIBO_ACTOR_ID", value="").strip()
 
 auth_config: dict[str, str] = {}
-if apify_token_input:
-    auth_config["APIFY_TOKEN"] = apify_token_input
-if apify_xhs_actor_input:
-    auth_config["APIFY_XHS_ACTOR_ID"] = apify_xhs_actor_input
-if apify_douyin_actor_input:
-    auth_config["APIFY_DOUYIN_ACTOR_ID"] = apify_douyin_actor_input
-if apify_weibo_actor_input:
-    auth_config["APIFY_WEIBO_ACTOR_ID"] = apify_weibo_actor_input
+if gemini_api_key_input:
+    auth_config["GEMINI_API_KEY"] = gemini_api_key_input
 
 force_refresh = st.sidebar.button(t("立即刷新", "Refresh now"), type="primary")
 
@@ -284,7 +276,7 @@ should_refresh_live = (
 )
 
 if should_refresh_live:
-    with st.spinner(t("正在拉取最新信号...", "Pulling latest social + news signals...")):
+    with st.spinner(t("正在拉取 Gemini 搜索新闻...", "Pulling Gemini-grounded news signals...")):
         refresh_and_store(
             query=query,
             max_items=max_items,
@@ -617,22 +609,21 @@ with tab_pipeline:
     if source_profile == "cn":
         st.markdown(
             """
-            - **中文模式默认**：优先抓取小红书/抖音/微博/B站信号，并聚合中文新闻源。
-            - **上海本地媒体池**：上观、解放日报、文汇、新民、东方网、看看新闻、Shanghai Daily、市政府等。
-            - **自主抓取优先**：内置 DuckDuckGo HTML + Google/Bing RSS + GDELT。
-            - **新闻兜底**：主查询 + 多新闻站点 `site:` 检索 + 无地区参数回退。
+            - **主来源**：Gemini 2.5 Flash + Google Search grounding（中英文双语新闻）。
+            - **激活方式**：在 `generate_content` 中传入 `tools=[types.Tool(google_search=types.GoogleSearch())]`。
+            - **轻量兜底**：仅在需要时使用 Google News RSS（避免重型网页/社媒爬虫）。
             - **每日组织**：写入 `data/snapshots/YYYY-MM-DD.json`。
-            - **可选密钥增强**：可输入 Apify Token + Actor ID 获取更深层社媒抓取。
+            - **可选社媒**：通过 Google News 的 `site:` 结果做轻量提及扫描。
             """
         )
     else:
         st.markdown(
             """
-            - **English mode = global sources**: YouTube, X/Twitter, Reddit, Instagram.
-            - **Global news outlets**: ABC, CNBC, Reuters, BBC, AP.
-            - **Own scraping first**: DuckDuckGo HTML + Google/Bing RSS + GDELT + Reddit JSON + YouTube RSS.
-            - **Fallback news path**: primary query + outlet `site:` query + locale-agnostic retry.
+            - **Primary source**: Gemini 2.5 Flash with Google Search grounding across English + Chinese news.
+            - **Activation**: pass `tools=[types.Tool(google_search=types.GoogleSearch())]` to `generate_content`.
+            - **Light fallback**: Google News RSS only, no heavy web/social scraping stack.
             - **Daily organization**: persisted in `data/snapshots/YYYY-MM-DD.json`.
+            - **Optional social**: lightweight site-filter mention scan via Google News.
             """
         )
     st.dataframe(
