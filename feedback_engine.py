@@ -9,17 +9,18 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import quote_plus
 
 import feedparser
-import requests
-from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
+from google import genai
+from google.genai import types
 
 CN_TZ = timezone(timedelta(hours=8))
 SNAPSHOT_DIR = Path(__file__).resolve().parent / "data" / "snapshots"
 DEFAULT_QUERY_CN = "上海迪士尼 游客 体验"
 DEFAULT_QUERY_GLOBAL = "Shanghai Disney OR Shanghai Disneyland"
+GEMINI_NEWS_MODEL = os.getenv("GEMINI_NEWS_MODEL", "gemini-2.5-flash")
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -62,14 +63,6 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "Tencent News": "qq.com",
             "China Daily": "chinadaily.com.cn",
         },
-        "fallback_news_queries": [
-            "上海迪士尼",
-            "上海迪士尼 游客",
-            "上海迪士尼 乐园 新闻",
-            "上海迪士尼 排队",
-            "上海迪士尼 服务",
-        ],
-        "news_domain_scan_limit": 20,
         "local_outlet_names": [
             "Shanghai Observer",
             "Jiefang Daily",
@@ -82,7 +75,6 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "Shanghai Government",
             "SMG",
         ],
-        "ddg_region": "cn-zh",
     },
     "global": {
         "display_name": "Global guest mode",
@@ -104,20 +96,7 @@ PROFILE_CONFIGS: dict[str, dict[str, Any]] = {
             "BBC": "bbc.com",
             "AP News": "apnews.com",
         },
-        "fallback_news_queries": [
-            "Shanghai Disney",
-            "Shanghai Disneyland",
-            "Shanghai Disney Resort news",
-        ],
-        "news_domain_scan_limit": 10,
-        "ddg_region": "us-en",
     },
-}
-
-APIFY_ACTOR_ENV = {
-    "Xiaohongshu": "APIFY_XHS_ACTOR_ID",
-    "Douyin": "APIFY_DOUYIN_ACTOR_ID",
-    "Weibo": "APIFY_WEIBO_ACTOR_ID",
 }
 
 POSITIVE_WORDS = {
@@ -315,6 +294,227 @@ def _resolve_secret(key: str, auth_config: dict[str, str] | None = None) -> str:
     return os.getenv(key, "").strip()
 
 
+def _init_gemini_client(auth_config: dict[str, str] | None = None) -> genai.Client | None:
+    api_key = _resolve_secret("GEMINI_API_KEY", auth_config)
+    if not api_key:
+        return None
+    try:
+        return genai.Client(api_key=api_key)
+    except Exception:
+        return None
+
+
+def _extract_json_payload(raw_text: str) -> Any:
+    text = (raw_text or "").strip()
+    if not text:
+        return {}
+
+    # Gemini may wrap JSON in markdown fences; strip them first.
+    fence_match = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", text, flags=re.I | re.S)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    candidates: list[str] = []
+    first_obj, last_obj = text.find("{"), text.rfind("}")
+    if first_obj != -1 and last_obj > first_obj:
+        candidates.append(text[first_obj : last_obj + 1])
+    first_arr, last_arr = text.find("["), text.rfind("]")
+    if first_arr != -1 and last_arr > first_arr:
+        candidates.append(text[first_arr : last_arr + 1])
+
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
+    return {}
+
+
+def _payload_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("items", "news", "articles", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _gemini_grounded_news_for_language(
+    client: genai.Client,
+    query: str,
+    max_items: int,
+    language_name: str,
+    language_code: str,
+    source_profile: str,
+) -> list[dict[str, Any]]:
+    prompt = (
+        "You are a news collector for Shanghai Disney market monitoring.\n"
+        "Use Google Search grounding to find recent trustworthy NEWS articles only.\n"
+        f"Target language for article selection: {language_name}.\n"
+        f"Topic: {query}\n"
+        f"Return up to {max_items} results.\n"
+        "Output JSON only (no markdown) in this shape:\n"
+        "{\n"
+        '  "items": [\n'
+        '    {\n'
+        '      "title": "string",\n'
+        '      "summary": "string",\n'
+        '      "url": "https://...",\n'
+        '      "source": "publisher name",\n'
+        '      "published_at": "ISO-8601 date or datetime",\n'
+        '      "language": "en or zh"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Rules:\n"
+        "- Prefer established media/news outlets.\n"
+        "- Exclude social posts, forums, and low-trust sources.\n"
+        "- Keep summaries concise."
+    )
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_NEWS_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
+        )
+    except Exception:
+        return []
+
+    response_text = (getattr(response, "text", "") or "").strip()
+    if not response_text:
+        try:
+            parts = response.candidates[0].content.parts
+            response_text = "\n".join(
+                part.text for part in parts if hasattr(part, "text") and (part.text or "").strip()
+            ).strip()
+        except Exception:
+            response_text = ""
+    if not response_text:
+        return []
+
+    payload = _extract_json_payload(response_text)
+    items = _payload_items(payload)
+    records: list[dict[str, Any]] = []
+
+    for item in items:
+        title = _first(item, ["title", "headline"])
+        summary = _first(item, ["summary", "snippet", "description"])
+        url = _first(item, ["url", "link"])
+        source = _first(item, ["source", "publisher", "outlet"], default=f"Google News ({language_code})")
+        published_at = _first(item, ["published_at", "publishedAt", "date", "datetime"])
+        if not title and not summary:
+            continue
+        if not url:
+            continue
+
+        item_language = _first(item, ["language", "lang"]).lower()
+        if item_language not in {"en", "zh"}:
+            item_language = detect_language(f"{title} {summary}")
+        if item_language == "unknown":
+            item_language = language_code
+        if item_language != language_code:
+            continue
+
+        records.append(
+            _build_record(
+                source_kind="news",
+                source_profile=source_profile,
+                platform=source,
+                title=title,
+                text=summary,
+                url=url,
+                author="Gemini Grounded Search",
+                published_at=published_at or datetime.now(timezone.utc),
+            )
+        )
+        if len(records) >= max_items:
+            break
+    return records
+
+
+def _google_news_bilingual_fallback(
+    query: str,
+    max_items: int,
+    source_profile: str,
+) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+
+    unique_queries: list[str] = []
+    for candidate in [query, DEFAULT_QUERY_GLOBAL, DEFAULT_QUERY_CN]:
+        cleaned = (candidate or "").strip()
+        if cleaned and cleaned.lower() not in {item.lower() for item in unique_queries}:
+            unique_queries.append(cleaned)
+
+    locale_cn = PROFILE_CONFIGS["cn"]["news_locale"]
+    locale_en = PROFILE_CONFIGS["global"]["news_locale"]
+    locale_primary = _get_profile_config(source_profile)["news_locale"]
+    locales = [locale_primary, locale_en, locale_cn, None]
+
+    records: list[dict[str, Any]] = []
+    per_pull = max(4, max_items // 2)
+    for candidate in unique_queries[:3]:
+        for locale in locales:
+            records.extend(
+                _google_news_feed(
+                    query=candidate,
+                    max_items=per_pull,
+                    source_kind="news",
+                    platform="Google News RSS",
+                    locale=locale,
+                    source_profile=source_profile,
+                )
+            )
+            deduped = _dedupe(records)
+            if len(deduped) >= max_items:
+                return deduped[:max_items]
+    return _dedupe(records)[:max_items]
+
+
+def _gemini_grounded_news(
+    query: str,
+    max_items: int,
+    source_profile: str,
+    auth_config: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    client = _init_gemini_client(auth_config)
+    if client is None or max_items <= 0:
+        return []
+
+    per_language = max(4, (max_items + 1) // 2)
+    records: list[dict[str, Any]] = []
+    records.extend(
+        _gemini_grounded_news_for_language(
+            client=client,
+            query=query,
+            max_items=per_language,
+            language_name="English",
+            language_code="en",
+            source_profile=source_profile,
+        )
+    )
+    records.extend(
+        _gemini_grounded_news_for_language(
+            client=client,
+            query=query,
+            max_items=per_language,
+            language_name="Chinese",
+            language_code="zh",
+            source_profile=source_profile,
+        )
+    )
+    return _dedupe(records)
+
+
 def _build_record(
     source_kind: str,
     platform: str,
@@ -389,326 +589,6 @@ def _google_news_feed(
     return records
 
 
-def _extract_duckduckgo_url(raw_url: str) -> str:
-    if not raw_url:
-        return ""
-    if raw_url.startswith("//"):
-        return f"https:{raw_url}"
-    if raw_url.startswith("/"):
-        parsed = urlparse(f"https://duckduckgo.com{raw_url}")
-        target = parse_qs(parsed.query).get("uddg", [""])[0]
-        return unquote(target) if target else ""
-    return raw_url
-
-
-def _duckduckgo_search(query: str, max_items: int, region: str = "") -> list[dict[str, str]]:
-    params = {"q": query}
-    if region:
-        params["kl"] = region
-    try:
-        response = requests.get(
-            "https://duckduckgo.com/html/",
-            params=params,
-            timeout=30,
-            headers=REQUEST_HEADERS,
-        )
-        response.raise_for_status()
-    except Exception:
-        return []
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    results: list[dict[str, str]] = []
-    seen_urls: set[str] = set()
-
-    for card in soup.select("div.result"):
-        if len(results) >= max_items:
-            break
-        anchor = card.select_one("a.result__a") or card.select_one("h2 a")
-        if anchor is None:
-            continue
-        url = _extract_duckduckgo_url((anchor.get("href") or "").strip())
-        if not url or url in seen_urls:
-            continue
-        snippet_node = card.select_one(".result__snippet")
-        snippet = snippet_node.get_text(" ", strip=True) if snippet_node else ""
-        title = anchor.get_text(" ", strip=True)
-        results.append({"title": title, "text": snippet, "url": url})
-        seen_urls.add(url)
-    return results
-
-
-def _collect_domain_mentions_via_search(
-    query: str,
-    domains: dict[str, str],
-    source_kind: str,
-    max_items: int,
-    source_profile: str,
-    region: str,
-) -> list[dict[str, Any]]:
-    if not domains or max_items <= 0:
-        return []
-
-    per_domain = max(2, max_items // max(1, len(domains)))
-    records: list[dict[str, Any]] = []
-    for platform, domain in domains.items():
-        search_results = _duckduckgo_search(
-            query=f"({query}) site:{domain}",
-            max_items=per_domain,
-            region=region,
-        )
-        for result in search_results:
-            records.append(
-                _build_record(
-                    source_kind=source_kind,
-                    source_profile=source_profile,
-                    platform=platform,
-                    title=result.get("title", ""),
-                    text=result.get("text", ""),
-                    url=result.get("url", ""),
-                    author="DuckDuckGo",
-                    published_at=datetime.now(timezone.utc),
-                )
-            )
-    return _dedupe(records)
-
-
-def _bing_news_feed(
-    query: str,
-    max_items: int,
-    source_profile: str,
-) -> list[dict[str, Any]]:
-    if max_items <= 0:
-        return []
-    encoded = quote_plus(query)
-    url = f"https://www.bing.com/news/search?q={encoded}&format=RSS"
-    feed = feedparser.parse(url)
-    records: list[dict[str, Any]] = []
-    for entry in feed.entries[:max_items]:
-        summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
-        records.append(
-            _build_record(
-                source_kind="news",
-                source_profile=source_profile,
-                platform=_first(entry, ["source"], "Bing News"),
-                title=entry.get("title", "").strip(),
-                text=re.sub(r"\s+", " ", summary).strip(),
-                url=entry.get("link", "").strip(),
-                author=_first(entry, ["author", "source"], "Bing News"),
-                published_at=entry.get("published") or entry.get("updated"),
-            )
-        )
-    return records
-
-
-def _gdelt_news_feed(
-    query: str,
-    max_items: int,
-    source_profile: str,
-) -> list[dict[str, Any]]:
-    if max_items <= 0:
-        return []
-    params = {
-        "query": query,
-        "mode": "ArtList",
-        "maxrecords": str(min(250, max_items)),
-        "format": "json",
-        "sort": "HybridRel",
-    }
-    try:
-        response = requests.get(
-            "https://api.gdeltproject.org/api/v2/doc/doc",
-            params=params,
-            timeout=40,
-            headers=REQUEST_HEADERS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception:
-        return []
-
-    articles = payload.get("articles", []) if isinstance(payload, dict) else []
-    records: list[dict[str, Any]] = []
-    for article in articles[:max_items]:
-        if not isinstance(article, dict):
-            continue
-        domain = (article.get("domain") or "").strip()
-        platform = domain if domain else "GDELT"
-        records.append(
-            _build_record(
-                source_kind="news",
-                source_profile=source_profile,
-                platform=platform,
-                title=(article.get("title") or "").strip(),
-                text=(article.get("seendate") or "").strip(),
-                url=(article.get("url") or "").strip(),
-                author=(article.get("sourcecountry") or "GDELT").strip(),
-                published_at=article.get("seendate") or article.get("socialimage") or datetime.now(timezone.utc),
-            )
-        )
-    return records
-
-
-def _youtube_search_feed(
-    query: str,
-    max_items: int,
-    source_profile: str,
-) -> list[dict[str, Any]]:
-    if max_items <= 0:
-        return []
-    encoded = quote_plus(query)
-    feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?search_query={encoded}")
-    records: list[dict[str, Any]] = []
-    for entry in feed.entries[:max_items]:
-        summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
-        records.append(
-            _build_record(
-                source_kind="social",
-                source_profile=source_profile,
-                platform="YouTube",
-                title=entry.get("title", "").strip(),
-                text=re.sub(r"\s+", " ", summary).strip(),
-                url=entry.get("link", "").strip(),
-                author=_first(entry, ["author", "yt_author"], "YouTube"),
-                published_at=entry.get("published") or entry.get("updated"),
-            )
-        )
-    return records
-
-
-def _reddit_search_feed(
-    query: str,
-    max_items: int,
-    source_profile: str,
-) -> list[dict[str, Any]]:
-    if max_items <= 0:
-        return []
-    params = {
-        "q": query,
-        "sort": "new",
-        "t": "week",
-        "limit": str(min(100, max_items)),
-    }
-    try:
-        response = requests.get(
-            "https://www.reddit.com/search.json",
-            params=params,
-            timeout=30,
-            headers=REQUEST_HEADERS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception:
-        return []
-
-    children = (
-        payload.get("data", {}).get("children", [])
-        if isinstance(payload, dict)
-        else []
-    )
-    records: list[dict[str, Any]] = []
-    for child in children[:max_items]:
-        item = child.get("data", {}) if isinstance(child, dict) else {}
-        permalink = (item.get("permalink") or "").strip()
-        url = f"https://www.reddit.com{permalink}" if permalink else (item.get("url") or "").strip()
-        subreddit = (item.get("subreddit_name_prefixed") or "Reddit").strip()
-        records.append(
-            _build_record(
-                source_kind="social",
-                source_profile=source_profile,
-                platform="Reddit",
-                title=(item.get("title") or "").strip(),
-                text=(item.get("selftext") or "").strip(),
-                url=url,
-                author=subreddit,
-                published_at=item.get("created_utc"),
-            )
-        )
-    return records
-
-
-def _run_apify_actor(actor_id: str, token: str, actor_input: dict[str, Any]) -> list[dict[str, Any]]:
-    run_url = (
-        f"https://api.apify.com/v2/acts/{actor_id}/runs"
-        f"?token={token}&waitForFinish=45"
-    )
-    try:
-        run_response = requests.post(run_url, json=actor_input, timeout=60, headers=REQUEST_HEADERS)
-        run_response.raise_for_status()
-        run_json = run_response.json().get("data", {})
-        dataset_id = run_json.get("defaultDatasetId")
-        if not dataset_id:
-            return []
-
-        data_url = (
-            f"https://api.apify.com/v2/datasets/{dataset_id}/items"
-            f"?token={token}&clean=true&format=json"
-        )
-        data_response = requests.get(data_url, timeout=60, headers=REQUEST_HEADERS)
-        data_response.raise_for_status()
-        items = data_response.json()
-        return items if isinstance(items, list) else []
-    except Exception:
-        return []
-
-
-def _fetch_apify_platform(
-    platform: str,
-    query: str,
-    max_items: int,
-    source_profile: str = "cn",
-    auth_config: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
-    token = _resolve_secret("APIFY_TOKEN", auth_config)
-    actor_env = APIFY_ACTOR_ENV.get(platform)
-    actor_id = _resolve_secret(actor_env, auth_config) if actor_env else ""
-    if not token or not actor_id:
-        return []
-
-    actor_input = {
-        "search": query,
-        "searchTerms": [query],
-        "keywords": [query],
-        "limit": max_items,
-        "maxItems": max_items,
-        "resultsLimit": max_items,
-        "sort": "latest",
-    }
-    raw_items = _run_apify_actor(actor_id=actor_id, token=token, actor_input=actor_input)
-    records: list[dict[str, Any]] = []
-
-    for item in raw_items:
-        title = _first(item, ["title", "name", "noteTitle", "desc", "caption"])
-        text = _first(item, ["text", "content", "description", "summary", "noteContent", "desc"])
-        url = _first(item, ["url", "shareUrl", "postUrl", "link"])
-        author = _first(item, ["author", "nickname", "userName", "user", "authorName"])
-        published = _first(
-            item,
-            [
-                "publishTime",
-                "publishedAt",
-                "createTime",
-                "createdAt",
-                "timestamp",
-                "time",
-            ],
-        )
-        if not title and not text:
-            continue
-        records.append(
-            _build_record(
-                source_kind="social",
-                source_profile=source_profile,
-                platform=platform,
-                title=title,
-                text=text,
-                url=url,
-                author=author,
-                published_at=published,
-            )
-        )
-    return records
-
-
 def _dedupe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: dict[str, dict[str, Any]] = {}
     for record in records:
@@ -724,71 +604,27 @@ def _collect_profile_news(
     query: str,
     max_items: int,
     source_profile: str,
+    auth_config: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    config = _get_profile_config(source_profile)
-    locale = config["news_locale"]
-    region = config.get("ddg_region", "")
-    all_domains = list(config["news_domains"].items())
-    scan_limit = min(len(all_domains), int(config.get("news_domain_scan_limit", len(all_domains))))
-    selected_domains = all_domains[:scan_limit]
-    domain_limit = max(3, max_items // max(3, scan_limit))
-    query_candidates = [query] + [
-        text for text in config["fallback_news_queries"] if text.strip().lower() != query.strip().lower()
-    ]
+    records = _gemini_grounded_news(
+        query=query,
+        max_items=max_items,
+        source_profile=source_profile,
+        auth_config=auth_config,
+    )
+    min_expected = max(6, max_items // 2)
+    if len(records) >= min_expected:
+        return records[:max_items]
 
-    records: list[dict[str, Any]] = []
-    for idx, candidate in enumerate(query_candidates[:3]):
-        per_query_limit = max_items if idx == 0 else max(8, max_items // 3)
-        records.extend(
-            _google_news_feed(
-                query=candidate,
-                max_items=per_query_limit,
-                source_kind="news",
-                platform="News",
-                locale=locale,
-                source_profile=source_profile,
-            )
-        )
-
-    for outlet, domain in selected_domains:
-        records.extend(
-            _google_news_feed(
-                query=f"({query}) site:{domain}",
-                max_items=domain_limit,
-                source_kind="news",
-                platform=outlet,
-                locale=locale,
-                source_profile=source_profile,
-            )
-        )
-
-    records.extend(_bing_news_feed(query=query, max_items=max(6, max_items // 2), source_profile=source_profile))
-    records.extend(_gdelt_news_feed(query=query, max_items=max(20, max_items), source_profile=source_profile))
+    # Keep the fallback lightweight and Google-native.
     records.extend(
-        _collect_domain_mentions_via_search(
+        _google_news_bilingual_fallback(
             query=query,
-            domains=dict(selected_domains),
-            source_kind="news",
             max_items=max_items,
             source_profile=source_profile,
-            region=region,
         )
     )
-
-    # If localized feed returns nothing, retry with locale-agnostic URL.
-    if not records:
-        records.extend(
-            _google_news_feed(
-                query=query,
-                max_items=max_items,
-                source_kind="news",
-                platform="News",
-                locale=None,
-                source_profile=source_profile,
-            )
-        )
-
-    return _dedupe(records)
+    return _dedupe(records)[:max_items]
 
 
 def detect_language(text: str) -> str:
@@ -1034,14 +870,20 @@ def collect_feedback(
     records: list[dict[str, Any]] = []
     config = _get_profile_config(source_profile)
     locale = config["news_locale"]
-    region = config.get("ddg_region", "")
     social_domains = config["social_domains"]
 
     if include_news:
-        records.extend(_collect_profile_news(query=query, max_items=max_items_per_source, source_profile=source_profile))
+        records.extend(
+            _collect_profile_news(
+                query=query,
+                max_items=max_items_per_source,
+                source_profile=source_profile,
+                auth_config=auth_config,
+            )
+        )
 
     if include_social:
-        social_limit = max(10, max_items_per_source // 2)
+        social_limit = max(4, max_items_per_source // 3)
         for platform, domain in social_domains.items():
             records.extend(
                 _google_news_feed(
@@ -1053,29 +895,6 @@ def collect_feedback(
                     source_profile=source_profile,
                 )
             )
-            if source_profile == "cn":
-                records.extend(
-                    _fetch_apify_platform(
-                        platform=platform,
-                        query=query,
-                        max_items=max_items_per_source,
-                        source_profile=source_profile,
-                        auth_config=auth_config,
-                    )
-                )
-        if source_profile == "global":
-            records.extend(_reddit_search_feed(query=query, max_items=max_items_per_source, source_profile=source_profile))
-            records.extend(_youtube_search_feed(query=query, max_items=max_items_per_source, source_profile=source_profile))
-        records.extend(
-            _collect_domain_mentions_via_search(
-                query=query,
-                domains=social_domains,
-                source_kind="social",
-                max_items=max_items_per_source,
-                source_profile=source_profile,
-                region=region,
-            )
-        )
 
     return _dedupe(records)
 
@@ -1148,96 +967,39 @@ def connector_status(
     auth_config: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     config = _get_profile_config(source_profile)
-    token_exists = bool(_resolve_secret("APIFY_TOKEN", auth_config))
-    all_domains = list(config["news_domains"].items())
-    scan_limit = min(len(all_domains), int(config.get("news_domain_scan_limit", len(all_domains))))
+    gemini_ready = bool(_resolve_secret("GEMINI_API_KEY", auth_config))
     statuses: list[dict[str, str]] = [
         {
             "connector": "Source profile",
             "type": "Routing mode",
             "status": source_profile,
-            "detail": f"{config['display_name']} | scanning {scan_limit}/{len(all_domains)} news outlets per refresh",
+            "detail": f"{config['display_name']} | bilingual EN+ZH news collection",
+        },
+        {
+            "connector": "Gemini + Google Search",
+            "type": "Primary grounded news source",
+            "status": "active" if gemini_ready else "optional",
+            "detail": (
+                "Grounded search is enabled for both English and Chinese news."
+                if gemini_ready
+                else "Set GEMINI_API_KEY to enable grounded Google Search collection."
+            ),
         },
         {
             "connector": "Google News RSS",
-            "type": "News + Mention Discovery",
+            "type": "Lightweight fallback",
             "status": "active",
-            "detail": "No key required.",
-        },
-        {
-            "connector": "Bing News RSS",
-            "type": "News fallback",
-            "status": "active",
-            "detail": "No key required.",
-        },
-        {
-            "connector": "GDELT Doc API",
-            "type": "Open news API",
-            "status": "active",
-            "detail": "No key required.",
-        },
-        {
-            "connector": "DuckDuckGo HTML",
-            "type": "Direct web scraping",
-            "status": "active",
-            "detail": "No key required.",
+            "detail": "Used only when Gemini-grounded output is unavailable or insufficient.",
         },
     ]
-
-    for outlet, domain in all_domains:
-        statuses.append(
-            {
-                "connector": outlet,
-                "type": "News outlet",
-                "status": "active" if outlet in dict(all_domains[:scan_limit]) else "standby",
-                "detail": f"site:{domain}",
-            }
-        )
 
     for platform, domain in config["social_domains"].items():
         statuses.append(
             {
                 "connector": platform,
-                "type": "Social discovery",
-                "status": "active",
-                "detail": f"site:{domain}",
-            }
-        )
-
-    if source_profile == "global":
-        statuses.append(
-            {
-                "connector": "Reddit JSON Search",
-                "type": "Open social API",
-                "status": "active",
-                "detail": "No key required.",
-            }
-        )
-        statuses.append(
-            {
-                "connector": "YouTube Search RSS",
-                "type": "Open social feed",
-                "status": "active",
-                "detail": "No key required.",
-            }
-        )
-
-    if source_profile != "cn":
-        return statuses
-
-    for platform, env_name in APIFY_ACTOR_ENV.items():
-        actor_id = _resolve_secret(env_name, auth_config)
-        configured = token_exists and bool(actor_id) and platform in config["social_domains"]
-        statuses.append(
-            {
-                "connector": f"{platform} (Apify actor)",
-                "type": "Direct social scraping",
-                "status": "active" if configured else "optional",
-                "detail": (
-                    "Configured and ingesting direct platform posts."
-                    if configured
-                    else f"Set APIFY_TOKEN + {env_name} to enable."
-                ),
+                "type": "Optional social mention scan",
+                "status": "standby",
+                "detail": f"Google News site filter: site:{domain}",
             }
         )
     return statuses

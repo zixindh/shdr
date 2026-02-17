@@ -1,6 +1,6 @@
 # Open-source Connector Research (GitHub)
 
-This note records open-source collection options reviewed for expanding Shanghai Disney signal volume.
+This note records connector options reviewed for Shanghai Disney signal collection.
 
 ## Repositories reviewed
 
@@ -12,17 +12,16 @@ This note records open-source collection options reviewed for expanding Shanghai
 
 ## What is integrated in this app now
 
-- **GDELT Doc API** (`_gdelt_news_feed`) for broader open news coverage.
-- **Reddit JSON search** (`_reddit_search_feed`) for global guest chatter.
-- **YouTube search RSS** (`_youtube_search_feed`) for global video mentions.
-- **Google News RSS + Bing News RSS + DuckDuckGo HTML scraping** for resilient fallback coverage.
+- **Gemini 2.5 Flash + Google Search grounding** as the primary news source.
+- **Google News RSS** as lightweight fallback.
+- **Optional social mention scan** via Google News `site:` filters.
 
 ## Why some GitHub options are not enabled by default
 
 - Platform anti-bot changes can break standalone crawlers quickly.
-- Some repositories require heavy browser automation and are not stable on Streamlit free tier.
-- Legal/compliance requirements differ by platform and region.
+- Heavy browser automation is not stable on Streamlit free tier.
+- A lightweight Google-grounded backend is more reliable for this app’s scope.
 
 ## Recommended next step
 
-If you need deeper CN social depth, run dedicated crawlers (from vetted open-source repos) in a scheduled backend service and feed normalized JSON into `data/snapshots/`.
+If deeper social coverage is required, run dedicated crawlers in a separate scheduled backend service and feed normalized JSON into `data/snapshots/`.

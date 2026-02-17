@@ -1,28 +1,18 @@
 # Shanghai Disney Guest Pulse Engine
 
-A Streamlit dashboard to monitor how guests feel about their Shanghai Disney trip, with social + news ingestion, sentiment scoring, and day-based navigation.
+A Streamlit dashboard for Shanghai Disney public-signal monitoring with a **Gemini-first, Google-grounded** news pipeline.
 
 ## What it does
 
-- Tracks mentions from:
-  - **Chinese mode (default)**: Xiaohongshu, Douyin, Weibo, Bilibili + broad Shanghai local media
-    - Shanghai Observer, Jiefang Daily, Wenhui, Xinmin Evening News, Eastday, Kankanews, Shanghai Daily, Shanghai Gov, and more
-  - **English mode (global sources)**: YouTube, X/Twitter, Reddit, Instagram + ABC/CNBC/Reuters/BBC/AP
-  - Built-in scraping first: DuckDuckGo HTML + RSS collectors + GDELT + Reddit JSON + YouTube RSS (no API key required)
-  - Social/domain discovery via Google News RSS + fallback retry logic
-- Scores each post/article as positive / neutral / negative (CN+EN keyword model)
-- Stores records by day: `data/snapshots/YYYY-MM-DD.json`
-- Highlights **one hottest topic per day** (topic hit count + coverage) to reduce information overload
-- Adds a **Media Intelligence cockpit** (risk radar, top outlets, local outlet coverage, recommended actions)
-- Single-language display mode:
-  - Choose **中文** or **English**
-  - UI and content are rendered in the selected language
-- Supports update modes:
-  - Near real-time (5-minute auto-refresh)
-  - Daily snapshot (24-hour refresh)
-  - Manual refresh
-- Includes an optional Gemini summary for selected day (`gemini-2.5-flash`)
-- Automatically stores source profile (`cn` / `global`) with each record
+- Uses **Gemini 2.5 Flash + Google Search grounding** as the primary news source.
+- Collects both **English and Chinese** news every refresh.
+- Keeps backend lightweight:
+  - Primary: Gemini grounded search
+  - Fallback: Google News RSS only
+  - Optional social mention scan: Google News `site:` filters (lightweight)
+- Scores each item as positive / neutral / negative (CN+EN keyword model).
+- Stores records by day: `data/snapshots/YYYY-MM-DD.json`.
+- Surfaces one hot topic per day plus media-risk summaries.
 
 ## Quick start
 
@@ -31,51 +21,34 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Optional environment variables
+## Required config
 
-### AI summary
+- `GEMINI_API_KEY` (env var or sidebar input)
 
-- `GEMINI_API_KEY`
-- Or input Gemini key directly in the Streamlit sidebar (session-only)
+Without a Gemini key, the app still runs using Google News RSS fallback, but Gemini grounding is disabled.
 
-### Direct social scraping (recommended for production)
+## Google Search grounding activation (official pattern)
 
-- `APIFY_TOKEN`
-- `APIFY_XHS_ACTOR_ID`
-- `APIFY_DOUYIN_ACTOR_ID`
-- `APIFY_WEIBO_ACTOR_ID`
+Google docs pattern used by this project:
 
-If Apify is not configured, the app still runs using RSS-based social mention discovery + news ingestion.
-If Apify is configured (sidebar input or env), the app performs deeper direct social scraping in Chinese mode.
+```python
+from google import genai
+from google.genai import types
 
-### Single-language display translation
+client = genai.Client(api_key="YOUR_KEY")
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Your prompt",
+    config=types.GenerateContentConfig(
+        tools=[types.Tool(google_search=types.GoogleSearch())]
+    ),
+)
+```
 
-- Uses `deep-translator` (GoogleTranslator backend) only when source content is in a different language than current display mode.
-- If translation is unavailable, the original text is shown.
-
-## Production ingestion pattern (recommended)
-
-1. Schedule `collect_feedback` every 5-15 minutes (or hourly) via cron/GitHub Actions.
-2. Persist daily snapshots.
-3. Serve Streamlit dashboard from snapshot files for fast UI response.
-4. Keep platform ToS / rate-limit compliance checks enabled.
-
-## Code reference map
-
-- `app.py`
-  - Streamlit UI, language/source mode switch, daily navigation, media intelligence panels
-  - Optional session-only API key inputs (Gemini / Apify)
-- `feedback_engine.py`
-  - Source profiles (`cn` / `global`) and outlet/domain configuration
-  - Collection pipeline (RSS + search scraping + GDELT + optional Apify + global social open endpoints)
-  - Daily topic extraction and media-risk summarization (`compute_media_brief`)
-  - Snapshot persistence and connector status reporting
-
-## Open-source connector research
-
-See `OPEN_SOURCE_CONNECTOR_RESEARCH.md` for GitHub research and integration decisions.
+Reference: https://ai.google.dev/gemini-api/docs/grounding
 
 ## Notes
 
+- Translation UI uses `deep-translator` only when needed.
 - This project is for public-signal monitoring only.
-- Always validate major claims against official channels.
+- Validate critical claims with official channels.
