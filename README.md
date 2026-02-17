@@ -27,6 +27,20 @@ streamlit run app.py
 
 Without a Gemini key, the app still runs using Google News RSS fallback, but Gemini grounding is disabled.
 
+## Automatic deployment
+
+This repo now includes `.github/workflows/auto-deploy-streamlit.yml`.
+
+- On every push to `main` (and this feature branch), GitHub Actions:
+  1. Installs dependencies and validates build
+  2. Confirms deployment reachability via URL health check
+- Streamlit Community Cloud handles the actual redeploy automatically on GitHub push once your app is connected.
+
+Set these GitHub **Repository Variables** for health checks:
+
+- `STREAMLIT_APP_URL_PROD` (for `main`)
+- `STREAMLIT_APP_URL_STAGING` (for feature/staging branch)
+
 ## Google Search grounding activation (official pattern)
 
 Google docs pattern used by this project:
