@@ -8,8 +8,12 @@ from html import escape
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from google import genai
 from streamlit_autorefresh import st_autorefresh
+
+try:
+    from google import genai
+except Exception:
+    genai = None
 
 from feedback_engine import (
     CN_TZ,
@@ -83,6 +87,8 @@ st.markdown(
 
 
 def init_gemini(api_key_override: str = "") -> genai.Client | None:
+    if genai is None:
+        return None
     key = (api_key_override or "").strip()
     if not key:
         key = os.getenv("GEMINI_API_KEY", "").strip()

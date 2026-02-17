@@ -13,8 +13,13 @@ from urllib.parse import quote_plus
 
 import feedparser
 from dateutil import parser as date_parser
-from google import genai
-from google.genai import types
+
+try:
+    from google import genai
+    from google.genai import types as genai_types
+except Exception:
+    genai = None
+    genai_types = None
 
 CN_TZ = timezone(timedelta(hours=8))
 SNAPSHOT_DIR = Path(__file__).resolve().parent / "data" / "snapshots"
@@ -294,7 +299,9 @@ def _resolve_secret(key: str, auth_config: dict[str, str] | None = None) -> str:
     return os.getenv(key, "").strip()
 
 
-def _init_gemini_client(auth_config: dict[str, str] | None = None) -> genai.Client | None:
+def _init_gemini_client(auth_config: dict[str, str] | None = None):
+    if genai is None:
+        return None
     api_key = _resolve_secret("GEMINI_API_KEY", auth_config)
     if not api_key:
         return None
@@ -347,13 +354,16 @@ def _payload_items(payload: Any) -> list[dict[str, Any]]:
 
 
 def _gemini_grounded_news_for_language(
-    client: genai.Client,
+    client,
     query: str,
     max_items: int,
     language_name: str,
     language_code: str,
     source_profile: str,
 ) -> list[dict[str, Any]]:
+    if genai_types is None:
+        return []
+
     prompt = (
         "You are a news collector for Shanghai Disney market monitoring.\n"
         "Use Google Search grounding to find recent trustworthy NEWS articles only.\n"
@@ -382,8 +392,8 @@ def _gemini_grounded_news_for_language(
         response = client.models.generate_content(
             model=GEMINI_NEWS_MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
+            config=genai_types.GenerateContentConfig(
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
             ),
         )
     except Exception:
